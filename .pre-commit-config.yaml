@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff版本需要与pyproject.toml中配置的版本一致
+    rev: v0.15.8
+    hooks:
+      # Ruff代码检查
+      - id: ruff
+        name: ruff-lint
+        args: [--fix]
+        stages: [pre-commit]
+        exclude: ^\.venv/
+      # Ruff代码格式化
+      - id: ruff-format
+        name: ruff-format
+        stages: [pre-commit]
+        exclude: ^\.venv/
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    # Mypy版本需要与pyproject.toml中配置的版本一致
+    rev: v1.19.1
+    hooks:
+      - id: mypy
+        name: mypy-type-check
+        args: [--config-file=pyproject.toml]
+        stages: [pre-commit]
+        exclude: ^\.venv/
+        additional_dependencies: []

@@ -1,0 +1,78 @@
+[project]
+name = "beartools"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pre-commit>=4.5.1",
+    "ruff>=0.15.8",
+]
+
+[tool.ruff]
+# 目标Python版本
+target-version = "py313"
+# 行长度限制
+line-length = 120
+# 缩进大小
+indent-width = 4
+
+[tool.ruff.lint]
+# 启用的规则集：E(pep8错误), W(pep8警告), F(导入错误), B(flake8-bugbear), I(导入排序), UP(pyupgrade), C(flake8-comprehensions), TID(flake8-tidy-imports)
+extend-select = ["E", "W", "F", "B", "I", "UP", "C", "TID"]
+# 忽略的规则
+ignore = [
+    "E501",  # 行长度过长由单独规则检查
+]
+
+[tool.ruff.lint.isort]
+# 导入排序规则
+case-sensitive = true
+force-single-line = false
+force-sort-within-sections = true
+# 导入分组顺序：标准库 → 第三方库 → 本地项目
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.format]
+# 格式化规则
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+
+[tool.mypy]
+# 目标Python版本
+python_version = "3.13"
+# 启用严格模式
+strict = true
+# 禁止使用Any类型
+disallow_any_unimported = true
+disallow_any_expr = true
+disallow_any_decorated = true
+disallow_any_explicit = true
+# 缺失类型提示检查
+disallow_untyped_defs = true
+disallow_untyped_calls = true
+# 导入处理
+ignore_missing_imports = false
+follow_imports = "normal"
+# 检查选项
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+# 输出格式
+show_error_codes = true
+show_column_numbers = true
+# 排除目录
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "tests/__pycache__",
+    "src/__pycache__",
+]
