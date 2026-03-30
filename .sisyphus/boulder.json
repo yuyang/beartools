@@ -1,0 +1,16 @@
+{
+  "active_plan": "/Users/liuyy/code/vb/beartools/.sisyphus/plans/feature-doctor-command-logging-config.md",
+  "started_at": "2026-03-29T11:53:15.318Z",
+  "session_ids": [
+    "ses_2c7138d14ffehrpq4Bit35JgNS",
+    "ses_2c68a77a9ffeb4v5CYtvAlTZee",
+    "ses_2c673fe0fffeF4AuVwpARfUeEn",
+    "ses_2c66fdbedffeKfAKuuENMjRp3k",
+    "ses_2c66ca29fffeuEdc5JoNOHi9N9",
+    "ses_2c316ca45ffegIRCSdmb8jKuvo",
+    "ses_2c303515dffePOwdlmayh3VaT3"
+  ],
+  "plan_name": "feature-doctor-command-logging-config",
+  "agent": "atlas",
+  "task_sessions": {}
+}

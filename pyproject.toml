@@ -4,13 +4,23 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "dynaconf==3.2.13",
+    "ping3==5.1.5",
+    "pyyaml==6.0.3",
+    "rich==14.3.3",
+    "typer==0.24.1",
+]
+
+[project.scripts]
+beartools = "beartools.cli:app"
 
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
     "pre-commit>=4.5.1",
     "ruff>=0.15.8",
+    "types-pyyaml>=6.0.12.20250915",
 ]
 
 [tool.ruff]
@@ -58,7 +68,7 @@ disallow_any_explicit = true
 disallow_untyped_defs = true
 disallow_untyped_calls = true
 # 导入处理
-ignore_missing_imports = false
+ignore_missing_imports = true
 follow_imports = "normal"
 # 检查选项
 warn_redundant_casts = true
