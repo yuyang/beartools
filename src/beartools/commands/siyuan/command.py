@@ -11,8 +11,7 @@ from rich.console import Console
 import typer
 
 from beartools.config import get_config
-
-from .handler import SiyuanError, SiyuanHandler
+from beartools.siyuan import SiyuanError, SiyuanHandler
 
 console = Console()
 app = typer.Typer(help="思源笔记相关操作")
