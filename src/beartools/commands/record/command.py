@@ -6,13 +6,12 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 
-import typer
 from rich.console import Console
 from rich.table import Table
+import typer
 
-from beartools.record import record_manager, Record
+from beartools.record import Record, record_manager
 
 console = Console()
 app = typer.Typer(help="记录管理相关操作")

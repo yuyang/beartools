@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 import time
 
 from rich.console import Console
@@ -108,7 +109,7 @@ async def _run_single_check(check_name: str) -> CheckResult:
         )
 
 
-async def run_checks_stream() -> CheckResult:
+async def run_checks_stream() -> AsyncGenerator[CheckResult]:
     """流式并发运行所有启用的检查项，每完成一个就返回一个结果
 
     Yields:

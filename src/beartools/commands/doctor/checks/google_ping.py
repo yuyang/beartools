@@ -47,7 +47,7 @@ class GooglePingCheck(BaseCheck):
         try:
             # 建立TCP连接到Google 443端口，模拟HTTPS握手
             conn_start = time.time()
-            _, writer = await asyncio.wait_for(asyncio.open_connection("www.google.com", 443), timeout=timeout)
+            _, writer = await asyncio.wait_for(asyncio.open_connection("www.google.com", 443), timeout=timeout)  # type: ignore[misc]
             latency = (time.time() - conn_start) * 1000
             writer.close()
             await writer.wait_closed()
@@ -61,7 +61,7 @@ class GooglePingCheck(BaseCheck):
                 detail=None,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration = time.time() - start_time
             return CheckResult(
                 name=self.name,

@@ -41,11 +41,11 @@ class SiyuanCheck(BaseCheck):
             bool: 端口开放返回True，否则返回False
         """
         try:
-            _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+            _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)  # type: ignore[misc]
             writer.close()
             await writer.wait_closed()
             return True
-        except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+        except (TimeoutError, ConnectionRefusedError, OSError):
             return False
 
     async def run(self) -> CheckResult:

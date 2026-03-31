@@ -2,19 +2,18 @@
 
 import asyncio
 import os
-import tempfile
-from datetime import timedelta
 from pathlib import Path
+import tempfile
 
 import pytest
 
-from beartools.record import Record, RecordManager
+from beartools.record import RecordManager
 
 
 class TestRecordManager:
     """RecordManager 测试类"""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         """每个测试前创建临时数据库"""
         self.temp_dir = tempfile.TemporaryDirectory()
         self.original_cwd = Path.cwd()
@@ -26,13 +25,13 @@ class TestRecordManager:
 
         self.record_manager = RecordManager()
 
-    def teardown_method(self):
+    def teardown_method(self) -> None:
         """每个测试后清理"""
         os.chdir(self.original_cwd)
         self.temp_dir.cleanup()
 
     @pytest.mark.asyncio
-    async def test_init_creates_table(self):
+    async def test_init_creates_table(self) -> None:
         """测试初始化会自动创建表"""
         await self.record_manager.init()
 
@@ -41,7 +40,7 @@ class TestRecordManager:
         assert db_path.exists()
 
     @pytest.mark.asyncio
-    async def test_mark_and_get_by_url(self):
+    async def test_mark_and_get_by_url(self) -> None:
         """测试标记和查询记录"""
         await self.record_manager.init()
 
@@ -62,7 +61,7 @@ class TestRecordManager:
         assert record_none is None
 
     @pytest.mark.asyncio
-    async def test_update_existing_record(self):
+    async def test_update_existing_record(self) -> None:
         """测试更新已存在的记录，update_time会更新"""
         await self.record_manager.init()
 
@@ -77,13 +76,14 @@ class TestRecordManager:
         await self.record_manager.mark_by_url(url="https://example.com/test", name="更新后的名称", id="id2")
         record2 = await self.record_manager.get_by_url("https://example.com/test")
 
+        assert record1 is not None
         assert record2 is not None
         assert record2.name == "更新后的名称"
         assert record2.id == "id2"
         assert record2.update_time > record1.update_time
 
     @pytest.mark.asyncio
-    async def test_get_all_order_and_limit(self):
+    async def test_get_all_order_and_limit(self) -> None:
         """测试get_all按更新时间倒序，最多返回100条"""
         await self.record_manager.init()
 

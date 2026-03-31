@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import io
+from typing import TypedDict, cast
 import zipfile
-from typing import Any
 
 import aiohttp
-import typer
 from rich.console import Console
+import typer
 
 from beartools.config import get_config
 
@@ -20,7 +20,45 @@ console = Console()
 app = typer.Typer(help="思源笔记相关操作")
 
 
-async def _list_notebooks_async() -> list[dict[str, Any]]:
+class _NotebookInfo(TypedDict):
+    """思源笔记本信息"""
+
+    id: str
+    name: str
+    icon: str
+    closed: bool
+    sort: int
+
+
+class _NotebooksData(TypedDict):
+    """lsNotebooks data 字段"""
+
+    notebooks: list[_NotebookInfo]
+
+
+class _NotebooksApiResponse(TypedDict):
+    """lsNotebooks API 响应"""
+
+    code: int
+    msg: str
+    data: _NotebooksData
+
+
+class _ExportData(TypedDict):
+    """exportMd data 字段"""
+
+    zip: str
+
+
+class _ExportApiResponse(TypedDict):
+    """exportMd API 响应"""
+
+    code: int
+    msg: str
+    data: _ExportData
+
+
+async def _list_notebooks_async() -> list[_NotebookInfo]:
     """异步获取所有思源笔记本列表
 
     Returns:
@@ -38,23 +76,25 @@ async def _list_notebooks_async() -> list[dict[str, Any]]:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "http://127.0.0.1:6806/api/notebook/lsNotebooks", headers=headers, json={}
+                "http://127.0.0.1:6806/api/notebook/lsNotebooks",
+                headers=headers,
+                json={},  # type: ignore[misc]
             ) as response:
                 if response.status != 200:
                     console.print(f"❌ API请求失败，状态码: {response.status}", style="red")
                     raise typer.Exit(1)
 
-                result = await response.json()
-                if result.get("code") != 0:
+                result: _NotebooksApiResponse = cast(_NotebooksApiResponse, await response.json())  # type: ignore[misc]
+                if result["code"] != 0:
                     console.print(f"❌ 操作失败: {result.get('msg', '未知错误')}", style="red")
                     raise typer.Exit(1)
 
-                return result.get("data", {}).get("notebooks", [])
+                return result["data"]["notebooks"]
 
     except aiohttp.ClientError as e:
         console.print(f"❌ 连接思源笔记失败: {str(e)}", style="red")
         console.print("请检查思源笔记是否已启动，且API服务已开启", style="yellow")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command(name="ls-notebooks", help="列出所有思源笔记本")  # type: ignore
@@ -104,14 +144,14 @@ async def _export_md_async(note_id: str) -> str:
                     console.print(f"❌ API请求失败，状态码: {response.status}", style="red")
                     raise typer.Exit(1)
 
-                result = await response.json()
-                if result.get("code") != 0:
+                result: _ExportApiResponse = cast(_ExportApiResponse, await response.json())  # type: ignore[misc]
+                if result["code"] != 0:
                     console.print(f"❌ 导出失败: {result.get('msg', '未知错误')}", style="red")
                     raise typer.Exit(1)
 
-                zip_path = result.get("data", {}).get("zip", "")
+                zip_path = result["data"]["zip"]
                 if not zip_path:
-                    console.print(f"❌ 导出失败: 未获取到导出文件路径", style="red")
+                    console.print("❌ 导出失败: 未获取到导出文件路径", style="red")
                     raise typer.Exit(1)
 
                 # 第二步：下载zip文件
@@ -128,7 +168,7 @@ async def _export_md_async(note_id: str) -> str:
                         # 找到所有.md文件
                         md_files = [f for f in zf.namelist() if f.endswith(".md")]
                         if not md_files:
-                            console.print(f"❌ 导出文件中没有找到Markdown内容", style="red")
+                            console.print("❌ 导出文件中没有找到Markdown内容", style="red")
                             raise typer.Exit(1)
 
                         # 读取第一个md文件内容
@@ -138,7 +178,7 @@ async def _export_md_async(note_id: str) -> str:
     except aiohttp.ClientError as e:
         console.print(f"❌ 连接思源笔记失败: {str(e)}", style="red")
         console.print("请检查思源笔记是否已启动，且API服务已开启", style="yellow")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
 @app.command(name="export-md", help="导出指定笔记为Markdown文本")  # type: ignore
@@ -161,7 +201,7 @@ def export_md(
             console.print(f"✅ 导出成功，已保存到: {output}", style="green")
         except Exception as e:
             console.print(f"❌ 写入文件失败: {str(e)}", style="red")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from None
     else:
         # 打印到控制台
         console.print(md_content)

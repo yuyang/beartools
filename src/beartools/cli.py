@@ -8,8 +8,8 @@ from __future__ import annotations
 import typer
 
 from beartools.commands.doctor.command import doctor_command
-from beartools.commands.siyuan import siyuan_app
 from beartools.commands.record import record_app
+from beartools.commands.siyuan import siyuan_app
 from beartools.logger import shutdown_logging
 
 # 创建主应用

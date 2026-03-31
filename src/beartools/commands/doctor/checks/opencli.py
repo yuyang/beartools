@@ -53,11 +53,11 @@ class OpenCliCheck(BaseCheck):
             process = await asyncio.create_subprocess_exec(
                 *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)  # type: ignore[misc]
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
             return CommandResult(return_code=process.returncode or 0, stdout=stdout, stderr=stderr)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if process.returncode is None:
                 try:
                     process.kill()
@@ -133,7 +133,7 @@ class OpenCliCheck(BaseCheck):
                     detail=full_output or None,
                 )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration = time.time() - start_time
             full_output = f"Timeout after {timeout} seconds\n"
 

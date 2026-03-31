@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 import aiosqlite
 
@@ -29,10 +29,10 @@ class RecordManager:
     数据保存在 ./data/record/beartools.db 中。
     """
 
-    _instance: Optional["RecordManager"] = None
+    _instance: RecordManager | None = None
     _initialized: bool = False
 
-    def __new__(cls) -> "RecordManager":
+    def __new__(cls) -> RecordManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
@@ -68,7 +68,7 @@ class RecordManager:
 
             # 检查是否有update_time字段，没有则添加（兼容旧版本表）
             async with conn.execute("PRAGMA table_info(record)") as cursor:
-                columns = [row[1] for row in await cursor.fetchall()]
+                columns: list[str] = [row[1] for row in await cursor.fetchall()]  # type: ignore[misc]
                 if "update_time" not in columns:
                     await conn.execute("ALTER TABLE record ADD COLUMN update_time TEXT NOT NULL DEFAULT ''")
 
@@ -78,7 +78,7 @@ class RecordManager:
         """初始化管理器，确保表存在"""
         await self._init_table()
 
-    async def get_by_url(self, url: str) -> Optional[Record]:
+    async def get_by_url(self, url: str) -> Record | None:
         """根据URL查询记录
 
         Args:
@@ -95,8 +95,8 @@ class RecordManager:
                 ) as cursor:
                     row = await cursor.fetchone()
                     if row:
-                        update_time = datetime.fromisoformat(row["update_time"])
-                        return Record(id=row["id"], name=row["name"], url=row["url"], update_time=update_time)
+                        update_time = datetime.fromisoformat(row["update_time"])  # type: ignore[misc]
+                        return Record(id=row["id"], name=row["name"], url=row["url"], update_time=update_time)  # type: ignore[misc]
                     return None
 
     async def mark_by_url(self, url: str, name: str, id: str) -> bool:
@@ -141,8 +141,8 @@ class RecordManager:
                     rows = await cursor.fetchall()
                     records = []
                     for row in rows:
-                        update_time = datetime.fromisoformat(row["update_time"])
-                        records.append(Record(id=row["id"], name=row["name"], url=row["url"], update_time=update_time))
+                        update_time = datetime.fromisoformat(row["update_time"])  # type: ignore[misc]
+                        records.append(Record(id=row["id"], name=row["name"], url=row["url"], update_time=update_time))  # type: ignore[misc]
                     return records
 
 
