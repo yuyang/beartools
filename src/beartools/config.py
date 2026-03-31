@@ -46,6 +46,8 @@ class SiyuanConfig:
 
     token: str = ""  # 思源笔记API访问令牌
     default_note: str = ""  # 默认操作的笔记ID
+    notebook: str = ""  # 上传目标笔记本ID
+    path: str = ""  # 上传目标路径
 
 
 @dataclass
@@ -109,7 +111,14 @@ def _convert_to_dataclass(settings: LazySettings) -> Config:  # type: ignore
     siyuan_settings: dict[str, object] = settings.get("siyuan", {})  # type: ignore
     token_val = siyuan_settings.get("token", "")
     default_note_val = siyuan_settings.get("default_note", "")
-    siyuan_config = SiyuanConfig(token=str(token_val), default_note=str(default_note_val))
+    notebook_val = siyuan_settings.get("notebook", "")
+    path_val2 = siyuan_settings.get("path", "")
+    siyuan_config = SiyuanConfig(
+        token=str(token_val),
+        default_note=str(default_note_val),
+        notebook=str(notebook_val),
+        path=str(path_val2),
+    )
 
     return Config(log=log_config, doctor=doctor_config, siyuan=siyuan_config)
 
