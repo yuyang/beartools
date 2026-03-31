@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 import time
 
 from rich.console import Console
@@ -39,6 +39,11 @@ def print_result(result: CheckResult) -> None:
         duration_text = Text(f" [{result.duration:.2f}s]", style="yellow")
         line = Text.assemble(status_mark, name_text, ": ", message_text, duration_text)
         console.print(line)
+        # 如果有详细信息，以灰色打印
+        if result.detail:
+            detail_lines = result.detail.split("\n")
+            for detail_line in detail_lines:
+                console.print(Text(f"  {detail_line}", style="dim gray"))
 
     elif result.status == CheckStatus.FAILURE:
         # 红色 ❌ 失败输出
@@ -68,7 +73,7 @@ def print_result(result: CheckResult) -> None:
                 console.print(Text(f"  {detail_line}", style="dim gray"))
 
 
-def _run_single_check(check_name: str) -> CheckResult:
+async def _run_single_check(check_name: str) -> CheckResult:
     """运行单个检查项
 
     Args:
@@ -89,7 +94,7 @@ def _run_single_check(check_name: str) -> CheckResult:
 
     start_time = time.time()
     try:
-        result = check.run()
+        result = await check.run()
         result.duration = time.time() - start_time
         return result
     except Exception as e:
@@ -103,23 +108,33 @@ def _run_single_check(check_name: str) -> CheckResult:
         )
 
 
-def run_checks() -> list[CheckResult]:
-    """并发运行所有启用的检查项
+async def run_checks_stream() -> CheckResult:
+    """流式并发运行所有启用的检查项，每完成一个就返回一个结果
 
-    Returns:
-        list[CheckResult]: 所有检查项的执行结果列表
+    Yields:
+        CheckResult: 单个检查项的执行结果
     """
     config = get_config()
     auto_discover_checks()
 
     enabled_checks = config.doctor.enabled_checks
 
-    # 使用线程池并发执行所有检查项
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(_run_single_check, check_name) for check_name in enabled_checks]
-        results = [future.result() for future in futures]
+    # 创建所有任务
+    tasks = [asyncio.create_task(_run_single_check(check_name)) for check_name in enabled_checks]
 
-    return results
+    # 按完成顺序返回结果
+    for task in asyncio.as_completed(tasks):
+        result = await task
+        yield result
+
+
+async def run_checks() -> list[CheckResult]:
+    """并发运行所有启用的检查项，返回所有结果列表（兼容原有接口）
+
+    Returns:
+        list[CheckResult]: 所有检查项的执行结果列表
+    """
+    return [result async for result in run_checks_stream()]
 
 
 def print_summary(success_count: int, failure_count: int, warning_count: int) -> None:
@@ -148,20 +163,16 @@ def print_summary(success_count: int, failure_count: int, warning_count: int) ->
     console.print(Text.assemble(*parts))
 
 
-def doctor_command() -> None:
-    """Doctor 健康检查命令入口
-
-    执行所有配置启用的健康检查，并输出彩色结果和汇总统计。
-    """
+async def _doctor_command_async() -> None:
+    """异步执行doctor命令，流式输出检查结果"""
     console.print("🏥 运行环境检查中...\n", style="bold blue")
-
-    results = run_checks()
 
     success_count = 0
     failure_count = 0
     warning_count = 0
 
-    for result in results:
+    # 流式遍历检查结果，完成一个打印一个
+    async for result in run_checks_stream():
         print_result(result)
         # 记录到日志
         logger.info(
@@ -180,3 +191,17 @@ def doctor_command() -> None:
             warning_count += 1
 
     print_summary(success_count, failure_count, warning_count)
+
+    # 记录汇总信息到日志
+    total = success_count + failure_count + warning_count
+    logger.info(
+        "🏁 检查完成: 共 %d 项检查 ✓ %d 成功 ✗ %d 失败 ⚠ %d 警告", total, success_count, failure_count, warning_count
+    )
+
+
+def doctor_command() -> None:
+    """Doctor 健康检查命令入口
+
+    执行所有配置启用的健康检查，并输出彩色结果和汇总统计。
+    """
+    asyncio.run(_doctor_command_async())

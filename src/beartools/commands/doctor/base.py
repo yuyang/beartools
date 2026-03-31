@@ -69,7 +69,7 @@ class BaseCheck(ABC):
         pass
 
     @abstractmethod
-    def run(self) -> CheckResult:
+    async def run(self) -> CheckResult:
         """执行检查
 
         Returns:

@@ -5,9 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-
-from ping3 import ping
 
 from beartools.commands.doctor.base import BaseCheck, CheckResult, CheckStatus, register_check
 from beartools.config import get_config
@@ -17,7 +16,7 @@ from beartools.config import get_config
 class GooglePingCheck(BaseCheck):
     """Google Ping 检查项
 
-    使用 ping3 库发送 ICMP ping 包到 www.google.com，检查网络连通性。
+    使用TCP连接到www.google.com:443检查网络连通性，无需管理员权限。
     """
 
     @property
@@ -30,13 +29,13 @@ class GooglePingCheck(BaseCheck):
         """检查项描述"""
         return "检查到www.google.com的网络连通性"
 
-    def run(self) -> CheckResult:
-        """执行 Google Ping 检查
+    async def run(self) -> CheckResult:
+        """执行 Google 连通性检查
 
         Returns:
             CheckResult: 检查结果
-            - SUCCESS: ping 成功，能够连通 Google
-            - FAILURE: ping 失败，无法连通 Google
+            - SUCCESS: 连接成功，能够连通 Google
+            - FAILURE: 连接失败，无法连通 Google
         """
         start_time = time.time()
         config = get_config()
@@ -46,29 +45,34 @@ class GooglePingCheck(BaseCheck):
         timeout: int = check_config.timeout if check_config else 2
 
         try:
-            # 执行 ping，返回值是延迟秒数，如果失败返回 None 或 False
-            result_delay: float | None | bool = ping("www.google.com", timeout=timeout)
+            # 建立TCP连接到Google 443端口，模拟HTTPS握手
+            conn_start = time.time()
+            _, writer = await asyncio.wait_for(asyncio.open_connection("www.google.com", 443), timeout=timeout)
+            latency = (time.time() - conn_start) * 1000
+            writer.close()
+            await writer.wait_closed()
 
-            if isinstance(result_delay, (float, int)):
-                duration = time.time() - start_time
-                return CheckResult(
-                    name=self.name,
-                    status=CheckStatus.SUCCESS,
-                    message=f"成功连接到 Google，延迟 {result_delay * 1000:.1f}ms",
-                    duration=duration,
-                    detail=None,
-                )
-            elif result_delay is False:
-                duration = time.time() - start_time
-                return CheckResult(
-                    name=self.name,
-                    status=CheckStatus.FAILURE,
-                    message="无法连接到 Google，请求超时",
-                    duration=duration,
-                    detail=None,
-                )
-            else:  # result_delay is None
-                duration = time.time() - start_time
+            duration = time.time() - start_time
+            return CheckResult(
+                name=self.name,
+                status=CheckStatus.SUCCESS,
+                message=f"成功连接到 Google，延迟 {latency:.1f}ms",
+                duration=duration,
+                detail=None,
+            )
+
+        except asyncio.TimeoutError:
+            duration = time.time() - start_time
+            return CheckResult(
+                name=self.name,
+                status=CheckStatus.FAILURE,
+                message="无法连接到 Google，请求超时",
+                duration=duration,
+                detail=None,
+            )
+        except (ConnectionRefusedError, OSError) as e:
+            duration = time.time() - start_time
+            if "Name or service not known" in str(e) or "nodename nor servname provided" in str(e):
                 return CheckResult(
                     name=self.name,
                     status=CheckStatus.FAILURE,
@@ -76,14 +80,12 @@ class GooglePingCheck(BaseCheck):
                     duration=duration,
                     detail=None,
                 )
-        except PermissionError:
-            duration = time.time() - start_time
             return CheckResult(
                 name=self.name,
                 status=CheckStatus.FAILURE,
-                message="无法执行 ping 操作：权限不足，请以管理员权限运行",
+                message=f"连接 Google 出错：{str(e)}",
                 duration=duration,
-                detail="ICMP 操作需要系统管理员权限才能创建原始套接字",
+                detail=str(e),
             )
         except Exception as e:
             duration = time.time() - start_time
@@ -91,7 +93,7 @@ class GooglePingCheck(BaseCheck):
             return CheckResult(
                 name=self.name,
                 status=CheckStatus.FAILURE,
-                message=f"执行 ping 操作出错：{msg}",
+                message=f"检查 Google 连通性出错：{msg}",
                 duration=duration,
                 detail=msg,
             )

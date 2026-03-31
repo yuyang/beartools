@@ -8,6 +8,8 @@ from __future__ import annotations
 import typer
 
 from beartools.commands.doctor.command import doctor_command
+from beartools.commands.siyuan import siyuan_app
+from beartools.commands.record import record_app
 from beartools.logger import shutdown_logging
 
 # 创建主应用
@@ -32,6 +34,13 @@ def doctor() -> None:
     """运行环境健康检查"""
     doctor_command()
     shutdown_logging()
+
+
+# 注册siyuan作为子命令
+app.add_typer(siyuan_app, name="siyuan", help="思源笔记相关操作")
+
+# 注册record作为子命令
+app.add_typer(record_app, name="record", help="记录管理相关操作")
 
 
 if __name__ == "__main__":

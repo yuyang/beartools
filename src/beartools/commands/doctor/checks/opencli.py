@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
-import subprocess
 import time
 from typing import NamedTuple
 
@@ -39,7 +39,7 @@ class OpenCliCheck(BaseCheck):
         """检查项描述"""
         return "检查opencli是否已安装并运行opencli doctor"
 
-    def _run_command(self, command: list[str], timeout: int) -> CommandResult:
+    async def _run_command(self, command: list[str], timeout: int) -> CommandResult:
         """执行外部命令并捕获输出
 
         Args:
@@ -49,10 +49,24 @@ class OpenCliCheck(BaseCheck):
         Returns:
             CommandResult: 包含返回码、标准输出和标准错误
         """
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
-        return CommandResult(return_code=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
+            return CommandResult(return_code=process.returncode or 0, stdout=stdout, stderr=stderr)
+        except asyncio.TimeoutError:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
+            raise
 
-    def run(self) -> CheckResult:
+    async def run(self) -> CheckResult:
         """执行 OpenCli 检查
 
         Returns:
@@ -81,7 +95,7 @@ class OpenCliCheck(BaseCheck):
 
         try:
             # 执行 opencli doctor
-            result = self._run_command(["opencli", "doctor"], timeout=timeout)
+            result = await self._run_command(["opencli", "doctor"], timeout=timeout)
             duration = time.time() - start_time
 
             # 合并输出
@@ -119,15 +133,9 @@ class OpenCliCheck(BaseCheck):
                     detail=full_output or None,
                 )
 
-        except subprocess.TimeoutExpired as e:
+        except asyncio.TimeoutError:
             duration = time.time() - start_time
-            output = e.stdout if isinstance(e.stdout, str) and e.stdout else ""
-            stderr_output = e.stderr if isinstance(e.stderr, str) and e.stderr else ""
             full_output = f"Timeout after {timeout} seconds\n"
-            if output:
-                full_output += f"\nSTDOUT:\n{output}"
-            if stderr_output:
-                full_output += f"\nSTDERR:\n{stderr_output}"
 
             return CheckResult(
                 name=self.name,

@@ -1,6 +1,6 @@
 """配置文件读取模块
 
-读取当前工作目录下的.config/beartools.yaml配置文件，
+读取当前工作目录下的config/beartools.yaml配置文件，
 支持.env文件和环境变量覆盖（BEARTOOLS_前缀）。
 """
 
@@ -19,7 +19,7 @@ _config_instance: Config | None = None
 class LogConfig:
     """日志配置"""
 
-    path: Path = field(default_factory=lambda: Path(".logs") / "beartools.log")
+    path: Path = field(default_factory=lambda: Path("log") / "beartools.log")
     level: str = "INFO"
     config_file: Path | None = None
 
@@ -36,8 +36,16 @@ class DoctorCheckConfig:
 class DoctorConfig:
     """健康检查总配置"""
 
-    enabled_checks: list[str] = field(default_factory=lambda: ["google_ping", "opencli"])
+    enabled_checks: list[str] = field(default_factory=lambda: ["google_ping", "opencli", "siyuan"])
     checks: dict[str, DoctorCheckConfig] = field(default_factory=dict)
+
+
+@dataclass
+class SiyuanConfig:
+    """思源笔记全局配置"""
+
+    token: str = ""  # 思源笔记API访问令牌
+    default_note: str = ""  # 默认操作的笔记ID
 
 
 @dataclass
@@ -46,26 +54,27 @@ class Config:
 
     log: LogConfig = field(default_factory=LogConfig)
     doctor: DoctorConfig = field(default_factory=DoctorConfig)
+    siyuan: SiyuanConfig = field(default_factory=SiyuanConfig)
 
 
 def _ensure_config_dir() -> None:
-    """确保.config目录存在"""
+    """确保config目录存在"""
     cwd = Path.cwd()
-    config_dir = cwd / ".config"
+    config_dir = cwd / "config"
     if not config_dir.exists():
         try:
             config_dir.mkdir(parents=True, exist_ok=True)
         except PermissionError as e:
-            raise RuntimeError(f"无法创建.config目录: 权限不足 - {e}") from e
+            raise RuntimeError(f"无法创建config目录: 权限不足 - {e}") from e
         except OSError as e:
-            raise RuntimeError(f"无法创建.config目录: {e}") from e
+            raise RuntimeError(f"无法创建config目录: {e}") from e
 
 
 def _convert_to_dataclass(settings: LazySettings) -> Config:  # type: ignore
     """将dynaconf设置转换为Config数据类，保持接口兼容"""
     # 处理log配置
     log_settings: dict[str, object] = settings.get("log", {})  # type: ignore
-    path_val = log_settings.get("path", ".logs/beartools.log")
+    path_val = log_settings.get("path", "log/beartools.log")
     log_path = Path(str(path_val))
     level_val = log_settings.get("level", "INFO")
     log_level = str(level_val)
@@ -96,11 +105,17 @@ def _convert_to_dataclass(settings: LazySettings) -> Config:  # type: ignore
 
     doctor_config = DoctorConfig(enabled_checks=enabled_checks, checks=merged_checks)
 
-    return Config(log=log_config, doctor=doctor_config)
+    # 处理siyuan配置
+    siyuan_settings: dict[str, object] = settings.get("siyuan", {})  # type: ignore
+    token_val = siyuan_settings.get("token", "")
+    default_note_val = siyuan_settings.get("default_note", "")
+    siyuan_config = SiyuanConfig(token=str(token_val), default_note=str(default_note_val))
+
+    return Config(log=log_config, doctor=doctor_config, siyuan=siyuan_config)
 
 
 def load_config() -> Config:
-    """加载配置，从.config/beartools.yaml读取，支持环境变量覆盖
+    """加载配置，从config/beartools.yaml读取，支持环境变量覆盖
 
     Returns:
         Config: 加载完成的配置对象
@@ -111,7 +126,7 @@ def load_config() -> Config:
     global _config_instance
     _ensure_config_dir()
     cwd = Path.cwd()
-    config_path = cwd / ".config" / "beartools.yaml"
+    config_path = cwd / "config" / "beartools.yaml"
 
     # 使用dynaconf加载配置
     settings = LazySettings(  # type: ignore

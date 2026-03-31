@@ -11,7 +11,7 @@ from collections.abc import Mapping
 import json
 import logging
 import logging.config
-from logging.handlers import QueueHandler, QueueListener
+from logging.handlers import QueueHandler, QueueListener, TimedRotatingFileHandler
 from pathlib import Path
 from queue import Queue
 from typing import cast
@@ -81,9 +81,18 @@ def _setup_simple_config(log_config: LogConfig) -> None:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
 
-    # 创建文件处理器
+    # 创建文件处理器（每天切分一次，保留最近30天日志）
     try:
-        file_handler = logging.FileHandler(log_config.path, encoding="utf-8", mode="a")
+        file_handler = TimedRotatingFileHandler(
+            log_config.path,
+            when="MIDNIGHT",  # 每天凌晨切分
+            interval=1,  # 间隔1天
+            backupCount=30,  # 保留最近30天的日志
+            encoding="utf-8",
+            delay=True,  # 延迟创建文件直到第一条日志写入
+        )
+        # 设置日志文件名后缀格式：beartools.log.2024-03-30
+        file_handler.suffix = "%Y-%m-%d"
     except PermissionError as e:
         raise RuntimeError(f"无法打开日志文件: {log_config.path}, 权限不足 - {e}") from e
     except OSError as e:

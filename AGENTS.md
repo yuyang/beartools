@@ -9,6 +9,9 @@
 - 包管理工具：uv
 - 虚拟环境路径：`.venv`
 
+## 参考文档
+- 思源笔记API文档：https://github.com/siyuan-note/siyuan/blob/master/API_zh_CN.md
+
 ## 二、常用命令指南
 ### 环境操作
 ```bash
