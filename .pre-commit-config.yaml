@@ -27,4 +27,4 @@ repos:
         args: [--config-file=pyproject.toml]
         types: [python]
         stages: [pre-commit]
-        exclude: ^\.venv/
+        exclude: ^(\.venv/|tests/)
