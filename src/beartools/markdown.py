@@ -133,9 +133,80 @@ async def embed_images(input_path: str, output_path: str) -> list[EmbedResult]:
         raise ValueError(f"输入路径不存在或不是目录/md文件: {src}")
 
     if not md_files:
-        raise ValueError(f"在 {src} 中未找到任何 .md 文件")
+        # 列出目录下的所有文件帮助排查
+        error_msg = f"在 {src} 中未找到任何 .md 文件"
+        if await aiofiles.os.path.isdir(src):
+            files = await asyncio.to_thread(lambda: list(src.iterdir()))
+            if files:
+                file_list = "\n  - ".join([f.name for f in files])
+                error_msg += f"\n目录下现有文件:\n  - {file_list}"
+            else:
+                error_msg += "\n目录为空"
+        # 增加可能的错误原因
+        error_msg += "\n可能原因：\n  1. 下载工具未正确生成 Markdown 文件\n  2. 目标页面内容格式不支持转换为 Markdown\n  3. 下载过程中出现了未捕获的错误"
+        raise ValueError(error_msg)
 
     await aiofiles.os.makedirs(dst_dir, exist_ok=True)
 
     tasks = [_process_md_file(md_file, base_dir, dst_dir) for md_file in md_files]
     return await asyncio.gather(*tasks)
+
+
+# 匹配Markdown中所有URL形式的正则列表
+_URL_PATTERNS = [
+    # 普通链接和图片链接：[text](url) / ![alt](url)
+    re.compile(r"\[.*?\]\(([^)]+)\)"),
+    # 参考式链接：[ref]: url
+    re.compile(r"^\s*\[.*?\]:\s*(.+)$", re.MULTILINE),
+    # 尖括号链接：<url>
+    re.compile(r"<([^>]+)>"),
+    # 裸链：独立存在的URL，支持http/https/ftp/mailto协议
+    re.compile(r"((https?|ftp):\/\/[^\s,;!)\]'\"<>]+|mailto:[^\s,;!)\]'\"<>]+)"),
+]
+
+
+def extract_urls_from_markdown(text: str) -> list[str]:
+    """从 Markdown 文本中提取所有 URL，返回去重后的列表。
+
+    支持提取的URL形式：
+    1. 普通链接：[链接文本](https://example.com)
+    2. 图片链接：![替代文本](https://example.com/img.png)
+    3. 参考式链接：[ref]: https://example.com
+    4. 尖括号链接：<https://example.com>
+    5. 裸链：https://example.com（文本中独立存在的URL）
+
+    处理规则：
+    - 自动移除URL首尾空白字符
+    - 自动移除URL末尾的标点符号（. , ! ? ; : ) ] > " '）
+    - 对结果去重，保持首次出现的顺序
+    - 仅提取包含合法协议前缀的URL（http:// / https:// / ftp:// / mailto:）
+
+    Args:
+        text: 输入的 Markdown 文本
+
+    Returns:
+        提取到的 URL 列表，去重后按首次出现顺序排列
+    """
+    urls: set[str] = set()
+    url_list: list[str] = []
+
+    def _clean_url(url: str) -> str | None:
+        """清理URL，移除首尾空白和末尾标点，验证协议前缀"""
+        url = url.strip()
+        # 移除末尾标点
+        while url and url[-1] in {".", ",", "!", "?", ";", ":", ")", "]", ">", '"', "'"}:
+            url = url[:-1]
+        # 验证协议前缀
+        if url.startswith(("http://", "https://", "ftp://", "mailto:")):
+            return url
+        return None
+
+    # 遍历所有正则模式匹配URL
+    for pattern in _URL_PATTERNS:
+        for match in pattern.finditer(text):
+            url = _clean_url(match.group(1))
+            if url and url not in urls:
+                urls.add(url)
+                url_list.append(url)
+
+    return url_list
