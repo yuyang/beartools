@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import typer
 
+from beartools.commands.clear.command import clear_command
 from beartools.commands.doctor.command import doctor_command
 from beartools.commands.fetch.command import fetch
 from beartools.commands.markdown import markdown_app
@@ -35,6 +36,14 @@ def main(ctx: typer.Context) -> None:
 def doctor() -> None:
     """运行环境健康检查"""
     doctor_command()
+    shutdown_logging()
+
+
+# 注册clear作为子命令
+@app.command(name="clear", help="删除临时文件")  # type: ignore
+def clear() -> None:
+    """删除临时文件"""
+    clear_command()
     shutdown_logging()
 
 
