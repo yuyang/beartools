@@ -9,6 +9,10 @@
 - 包管理工具：uv
 - 虚拟环境路径：`.venv`
 
+## 依赖版本规范
+- 所有 `pyproject.toml` 中的依赖必须使用具体版本号（`==`），禁止使用 `>=`、`<=` 等范围版本
+- 添加新依赖时，先 `uv add <package>`，再查看当前安装版本并改为 `==` 锁定
+
 ## 参考文档
 - 思源笔记API文档：https://github.com/siyuan-note/siyuan/blob/master/API_zh_CN.md
 
@@ -64,7 +68,29 @@ uv run ruff format .
 uv run mypy .
 ```
 
-## 三、代码风格规范
+## 三、功能模块说明
+### 命令行功能
+- `doctor`：环境健康检查，异步并发执行，内置检查项：
+  - `google_ping`：Google网络连通性检查
+  - `opencli`：opencli工具可用性检查
+  - `siyuan`：思源笔记6806端口检查
+- `siyuan`：思源笔记相关操作：
+  - `ls-notebooks`：列出所有笔记本
+  - `export-md`：导出指定笔记为Markdown格式
+- `record`：URL记录管理：
+  - `getall`：列出最近100条记录，按更新时间倒序
+
+### 核心组件
+- **日志系统**：按天自动切分，保留30天历史日志，存储在`log/`目录
+- **记录管理器**：基于SQLite的URL记录存储，支持URL查询、标记、全量查询
+- **配置系统**：支持配置文件+环境变量，配置文件位于`config/beartools.yaml`
+
+### 数据存储位置
+- 配置文件：`config/beartools.yaml`（私有，已加入.gitignore）、`config/beartools.yaml.sample`（公开示例）
+- 日志文件：`log/`目录
+- SQLite数据库：`data/record/beartools.db`
+
+## 四、代码风格规范
 ### 1. 基础规范
 - 所有代码必须兼容Python 3.13+
 - 注释、文档字符串全部使用中文书写
@@ -99,7 +125,7 @@ uv run mypy .
 - 失败返回：code=-1，msg为错误信息
 - 导入路径：`import com.fenbilantian.data.APIDataVO`
 
-## 四、Git 操作规范
+## 五、Git 操作规范
 ### 核心规则
 - **禁止自动提交**：仅当用户明确要求"提交"/"commit"时才执行提交操作
 - 仅执行本地Git操作（status/diff/log/add/commit/branch/stash/reset），push/pull等网络操作告知用户手动执行
@@ -115,7 +141,7 @@ uv run mypy .
 | DEL | 删除 | 移除功能、文件、废弃代码 |
 | REFACTOR | 重构 | 代码结构调整，不改变外部行为 |
 
-## 五、协作规则
+## 六、协作规则
 ### 先问再做原则
 以下场景必须先确认再动手，禁止猜测：
 1. 架构设计、技术选型、分层方案
@@ -138,7 +164,7 @@ uv run mypy .
 2. 产品文档的字段定义、业务规则有遗漏或矛盾时，主动指出
 3. 引用文档中的信息前，先与代码交叉验证，不一致时明确告知用户
 
-## 六、禁止行为
+## 七、禁止行为
 1. 禁止使用`@ts-ignore`、`as any`等类型忽略操作
 2. 禁止删除现有测试用例来"通过"测试
 3. 禁止提交虚拟环境、缓存文件、敏感信息到Git
