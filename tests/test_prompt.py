@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -12,7 +12,6 @@ from beartools.prompt import (
     PromptManager,
     PromptTemplate,
     TemplateNotFoundError,
-    TemplateRenderError,
     VariableInfo,
     get_prompt_manager,
     reset_prompt_manager,
@@ -234,6 +233,44 @@ class TestPromptManager:
         """默认模板目录指向项目 prompts/"""
         manager = PromptManager()
         assert manager.prompt_dir.name == "prompts"
+
+    def test_project_prompts_include_bill_structure_templates(self) -> None:
+        """项目内置账单结构识别模板可被发现"""
+        manager = PromptManager()
+        templates = manager.list_templates()
+
+        assert "bill_structure_identification" in templates
+        assert "bill_structure_identification_fewshot" in templates
+
+    def test_render_bill_structure_template_uses_defaults(self) -> None:
+        """账单结构识别模板渲染时使用默认值"""
+        manager = PromptManager()
+
+        result = manager.render(
+            "bill_structure_identification",
+            {
+                "file_name": "sample.csv",
+                "file_content": "1: 交易时间,交易对方,金额,交易状态",
+            },
+        )
+
+        assert "**文件名**: sample.csv" in result
+        assert "**文件类型**: unknown" in result
+        assert "**候选来源**: 支付宝,微信,京东,未知" in result
+
+    def test_get_bill_structure_fewshot_variables(self) -> None:
+        """few-shot 模板变量可被正确提取"""
+        manager = PromptManager()
+
+        variables = manager.get_variables("bill_structure_identification_fewshot")
+        actual = [(var.name, var.has_default, var.default_value) for var in variables]
+
+        assert actual == [
+            ("file_name", False, None),
+            ("file_type", True, "unknown"),
+            ("candidate_sources", True, "支付宝,微信,京东,未知"),
+            ("file_content", False, None),
+        ]
 
     def test_render_missing_param_with_default_available(self, temp_prompt_dir: Path) -> None:
         """必填参数缺失时即使有其他变量有默认值也抛异常"""

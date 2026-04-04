@@ -7,12 +7,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import importlib
 from pathlib import Path
+from typing import Protocol, cast
 
-from dynaconf import LazySettings
+DEFAULT_DOCTOR_ENABLED_CHECKS = ["google_ping", "opencli", "siyuan"]
 
 # 全局配置单例
 _config_instance: Config | None = None
+
+
+class _SettingsLike(Protocol):
+    """配置读取接口。"""
+
+    def get(self, key: str, default: object = ...) -> object: ...
+
+
+def _create_lazy_settings(**kwargs: object) -> _SettingsLike:
+    dynaconf_module = importlib.import_module("dynaconf")
+    lazy_settings_class = cast(type[_SettingsLike], dynaconf_module.LazySettings)
+    return lazy_settings_class(**kwargs)
 
 
 @dataclass
@@ -36,7 +50,7 @@ class DoctorCheckConfig:
 class DoctorConfig:
     """健康检查总配置"""
 
-    enabled_checks: list[str] = field(default_factory=lambda: ["google_ping", "opencli", "siyuan"])
+    enabled_checks: list[str] = field(default_factory=lambda: list(DEFAULT_DOCTOR_ENABLED_CHECKS))
     checks: dict[str, DoctorCheckConfig] = field(default_factory=dict)
 
 
@@ -51,12 +65,33 @@ class SiyuanConfig:
 
 
 @dataclass
+class AgentNodeConfig:
+    """智能体节点配置"""
+
+    name: str = ""
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: int = 30
+
+
+@dataclass
+class AgentConfig:
+    """智能体配置"""
+
+    primary: AgentNodeConfig = field(default_factory=AgentNodeConfig)
+    candidates: list[AgentNodeConfig] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     """主配置"""
 
     log: LogConfig = field(default_factory=LogConfig)
     doctor: DoctorConfig = field(default_factory=DoctorConfig)
     siyuan: SiyuanConfig = field(default_factory=SiyuanConfig)
+    agent: AgentConfig = field(default_factory=AgentConfig)
 
 
 def _ensure_config_dir() -> None:
@@ -72,10 +107,109 @@ def _ensure_config_dir() -> None:
             raise RuntimeError(f"无法创建config目录: {e}") from e
 
 
-def _convert_to_dataclass(settings: LazySettings) -> Config:  # type: ignore
+def _parse_timeout_seconds(value: object, field_name: str) -> int:
+    """解析超时时间字段"""
+    if isinstance(value, bool):
+        raise RuntimeError(f"agent.{field_name} 必须是整数")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError as e:
+            raise RuntimeError(f"agent.{field_name} 必须是整数") from e
+    raise RuntimeError(f"agent.{field_name} 必须是整数")
+
+
+def _as_dict(value: object, path: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{path} 必须是字典")
+    return {str(key): val for key, val in value.items()}
+
+
+def _as_list(value: object, path: str) -> list[object]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"{path} 必须是列表")
+    return list(value)
+
+
+def _require_non_empty_string(value: object, path: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"{path} 必填且必须是非空字符串")
+    return value
+
+
+def _parse_api_key(value: object, path: str) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    raise RuntimeError(f"{path}.api_key 必须是字符串")
+
+
+def _parse_extra_headers(value: object, path: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{path}.extra_headers 必须是字典")
+
+    extra_headers: dict[str, str] = {}
+    for header_name, header_value in value.items():
+        if not isinstance(header_name, str) or not isinstance(header_value, str):
+            raise RuntimeError(f"{path}.extra_headers 必须是字符串键值对字典")
+        extra_headers[header_name] = header_value
+    return extra_headers
+
+
+def _parse_agent_node_config(node_settings: object, path: str) -> AgentNodeConfig:
+    """解析单个智能体节点配置"""
+    node_dict = _as_dict(node_settings, path)
+
+    name_val = _require_non_empty_string(node_dict.get("name"), f"{path}.name")
+    base_url_val = _require_non_empty_string(node_dict.get("base_url"), f"{path}.base_url")
+    model_val = _require_non_empty_string(node_dict.get("model"), f"{path}.model")
+    api_key = _parse_api_key(node_dict.get("api_key", ""), path)
+    extra_headers = _parse_extra_headers(node_dict.get("extra_headers", {}), path)
+    timeout_seconds = _parse_timeout_seconds(node_dict.get("timeout_seconds", 30), f"{path}.timeout_seconds")
+
+    return AgentNodeConfig(
+        name=name_val,
+        base_url=base_url_val,
+        model=model_val,
+        api_key=api_key,
+        extra_headers=extra_headers,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _parse_agent_config(settings: _SettingsLike) -> AgentConfig:
+    """解析智能体配置"""
+    agent_settings = settings.get("agent")
+    if agent_settings is None:
+        return AgentConfig()
+    agent_dict = _as_dict(agent_settings, "agent")
+
+    if "primary" not in agent_dict:
+        raise RuntimeError("agent.primary 必填")
+    primary = _parse_agent_node_config(agent_dict["primary"], "agent.primary")
+
+    candidates: list[AgentNodeConfig] = []
+    if "candidates" in agent_dict:
+        candidates_val = agent_dict["candidates"]
+        if candidates_val is None:
+            raise RuntimeError("agent.candidates 必须是列表")
+        for index, candidate_settings in enumerate(_as_list(candidates_val, "agent.candidates")):
+            candidates.append(_parse_agent_node_config(candidate_settings, f"agent.candidates[{index}]"))
+
+    return AgentConfig(primary=primary, candidates=candidates)
+
+
+def _convert_to_dataclass(settings: _SettingsLike) -> Config:
     """将dynaconf设置转换为Config数据类，保持接口兼容"""
     # 处理log配置
-    log_settings: dict[str, object] = settings.get("log", {})  # type: ignore
+    log_settings = _as_dict(settings.get("log", {}), "log")
     path_val = log_settings.get("path", "log/beartools.log")
     log_path = Path(str(path_val))
     level_val = log_settings.get("level", "INFO")
@@ -85,8 +219,8 @@ def _convert_to_dataclass(settings: LazySettings) -> Config:  # type: ignore
     log_config = LogConfig(path=log_path, level=log_level, config_file=log_config_file_path)
 
     # 处理doctor配置
-    doctor_settings: dict[str, object] = settings.get("doctor", {})  # type: ignore
-    default_enabled = ["google_ping", "opencli"]
+    doctor_settings = _as_dict(settings.get("doctor", {}), "doctor")
+    default_enabled = list(DEFAULT_DOCTOR_ENABLED_CHECKS)
     enabled_checks_val = doctor_settings.get("enabled_checks", default_enabled)
     if isinstance(enabled_checks_val, list):
         enabled_checks = [str(item) for item in enabled_checks_val]
@@ -108,7 +242,7 @@ def _convert_to_dataclass(settings: LazySettings) -> Config:  # type: ignore
     doctor_config = DoctorConfig(enabled_checks=enabled_checks, checks=merged_checks)
 
     # 处理siyuan配置
-    siyuan_settings: dict[str, object] = settings.get("siyuan", {})  # type: ignore
+    siyuan_settings = _as_dict(settings.get("siyuan", {}), "siyuan")
     token_val = siyuan_settings.get("token", "")
     default_note_val = siyuan_settings.get("default_note", "")
     notebook_val = siyuan_settings.get("notebook", "")
@@ -120,7 +254,9 @@ def _convert_to_dataclass(settings: LazySettings) -> Config:  # type: ignore
         path=str(path_val2),
     )
 
-    return Config(log=log_config, doctor=doctor_config, siyuan=siyuan_config)
+    agent_config = _parse_agent_config(settings)
+
+    return Config(log=log_config, doctor=doctor_config, siyuan=siyuan_config, agent=agent_config)
 
 
 def load_config() -> Config:
@@ -138,7 +274,7 @@ def load_config() -> Config:
     config_path = cwd / "config" / "beartools.yaml"
 
     # 使用dynaconf加载配置
-    settings = LazySettings(  # type: ignore
+    settings = _create_lazy_settings(
         envvar_prefix="BEARTOOLS",
         settings_file=str(config_path),
         load_dotenv=True,
@@ -146,7 +282,7 @@ def load_config() -> Config:
     )
 
     # 转换为数据类保持接口兼容
-    config = _convert_to_dataclass(settings)  # type: ignore
+    config = _convert_to_dataclass(settings)
     _config_instance = config
     return config
 
@@ -161,3 +297,9 @@ def get_config() -> Config:
     if _config_instance is None:
         return load_config()
     return _config_instance
+
+
+def reset_config() -> None:
+    """重置配置单例"""
+    global _config_instance
+    _config_instance = None

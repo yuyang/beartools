@@ -38,3 +38,27 @@ doctor:
       timeout: 2
       # 检查失败时是否终止运行，默认：true
       fail_on_error: false
+
+# 思源笔记配置
+siyuan:
+  token: "REPLACE_ME"
+  default_note: "REPLACE_ME_NOTE_ID"
+  notebook: "REPLACE_ME_NOTEBOOK_ID"
+  path: "/REPLACE_ME_PATH"
+
+# 智能体节点配置
+agent:
+  primary:
+    name: "primary"
+    base_url: "https://api.example.com/v1"
+    model: "gpt-4.1-mini"
+    api_key: "REPLACE_ME"
+    extra_headers: {}
+    timeout_seconds: 30
+  candidates:
+    - name: "candidate-1"
+      base_url: "https://api-backup.example.com/v1"
+      model: "gpt-4.1-mini"
+      api_key: "REPLACE_ME"
+      extra_headers: {}
+      timeout_seconds: 30

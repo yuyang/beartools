@@ -10,6 +10,9 @@ dependencies = [
     "aiosqlite==0.22.1",
     "dynaconf==3.2.13",
     "jinja2==3.1.6",
+    "litellm==1.82.6",
+    "openpyxl==3.1.5",
+    "pydantic-ai==1.77.0",
     "pyyaml==6.0.3",
     "rich==14.3.3",
     "typer==0.24.1",
@@ -65,6 +68,7 @@ skip-magic-trailing-comma = false
 python_version = "3.13"
 # 启用严格模式
 strict = true
+plugins = ["pydantic.mypy"]
 # 禁止使用Any类型
 disallow_any_unimported = true
 disallow_any_expr = true

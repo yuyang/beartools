@@ -27,7 +27,7 @@ class PromptManager:
             prompt_dir: 模板目录路径，默认为项目根目录下的 prompts/
         """
         if prompt_dir is None:
-            self.prompt_dir = Path(__file__).resolve().parents[2] / "prompts"
+            self.prompt_dir = Path(__file__).resolve().parents[3] / "prompts"
         else:
             self.prompt_dir = Path(prompt_dir)
 

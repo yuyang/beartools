@@ -1,6 +1,6 @@
 """Clear 清除临时文件命令主模块
 
-删除 ./data/download/ 和 ./data/format/ 目录下的所有文件，保留目录结构。
+删除 ./data/download/、./data/format/ 和 ./data/bill/ 目录下的所有文件，保留目录结构。
 """
 
 from pathlib import Path
@@ -14,12 +14,10 @@ from beartools.logger import get_logger
 console = Console()
 logger = get_logger(__name__)
 
-# 目录路径定义（基于项目根目录，此文件向上4级）
-_DATA_ROOT = Path(__file__).parents[4] / "data"
-_TARGET_DIRECTORIES = [
-    _DATA_ROOT / "download",
-    _DATA_ROOT / "format",
-]
+
+def _target_directories() -> list[Path]:
+    data_root = Path.cwd() / "data"
+    return [data_root / "download", data_root / "format", data_root / "bill"]
 
 
 def _clear_directory_contents(dir_path: Path) -> int:
@@ -54,14 +52,14 @@ def _clear_directory_contents(dir_path: Path) -> int:
 def clear_command() -> None:
     """Clear 命令入口
 
-    删除 ./data/download/ 和 ./data/format/ 目录下的所有文件，
+    删除 ./data/download/、./data/format/ 和 ./data/bill/ 目录下的所有文件，
     保留目录结构，并输出删除的文件总数。
     """
     total_deleted = 0
 
     console.print("🧹 正在清理临时文件...\n", style="bold blue")
 
-    for dir_path in _TARGET_DIRECTORIES:
+    for dir_path in _target_directories():
         count = _clear_directory_contents(dir_path)
         total_deleted += count
         if count > 0:

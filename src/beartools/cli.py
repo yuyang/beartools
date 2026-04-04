@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import typer
 
+from beartools.commands.bill import bill_app
 from beartools.commands.clear.command import clear_command
 from beartools.commands.doctor.command import doctor_command
 from beartools.commands.fetch.command import fetch
@@ -55,6 +56,9 @@ app.add_typer(record_app, name="record", help="记录管理相关操作")
 
 # 注册markdown作为子命令
 app.add_typer(markdown_app, name="markdown", help="Markdown 文件处理相关操作")
+
+# 注册bill作为子命令
+app.add_typer(bill_app, name="bill", help="账单处理相关操作")
 
 # 注册fetch作为子命令
 app.command(name="fetch", help="根据URL抓取内容")(fetch)
