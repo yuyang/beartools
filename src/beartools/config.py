@@ -11,7 +11,7 @@ import importlib
 from pathlib import Path
 from typing import Protocol, cast
 
-DEFAULT_DOCTOR_ENABLED_CHECKS = ["google_ping", "opencli", "siyuan"]
+DEFAULT_DOCTOR_ENABLED_CHECKS = ["google_ping", "opencli", "siyuan", "llm"]
 
 # 全局配置单例
 _config_instance: Config | None = None
@@ -69,6 +69,7 @@ class AgentNodeConfig:
     """智能体节点配置"""
 
     name: str = ""
+    provider: str = ""
     base_url: str = ""
     model: str = ""
     api_key: str = ""
@@ -163,11 +164,20 @@ def _parse_extra_headers(value: object, path: str) -> dict[str, str]:
     return extra_headers
 
 
+def _parse_provider(value: object, path: str) -> str:
+    """解析并校验 provider。"""
+    provider = _require_non_empty_string(value, f"{path}.provider")
+    if provider not in {"openai", "openrouter"}:
+        raise RuntimeError(f"{path}.provider 仅支持 openai/openrouter")
+    return provider
+
+
 def _parse_agent_node_config(node_settings: object, path: str) -> AgentNodeConfig:
     """解析单个智能体节点配置"""
     node_dict = _as_dict(node_settings, path)
 
     name_val = _require_non_empty_string(node_dict.get("name"), f"{path}.name")
+    provider_val = _parse_provider(node_dict.get("provider"), path)
     base_url_val = _require_non_empty_string(node_dict.get("base_url"), f"{path}.base_url")
     model_val = _require_non_empty_string(node_dict.get("model"), f"{path}.model")
     api_key = _parse_api_key(node_dict.get("api_key", ""), path)
@@ -176,6 +186,7 @@ def _parse_agent_node_config(node_settings: object, path: str) -> AgentNodeConfi
 
     return AgentNodeConfig(
         name=name_val,
+        provider=provider_val,
         base_url=base_url_val,
         model=model_val,
         api_key=api_key,
@@ -233,9 +244,10 @@ def _convert_to_dataclass(settings: _SettingsLike) -> Config:
     if isinstance(checks_dict_val, dict):
         for check_name, check_config in checks_dict_val.items():
             if isinstance(check_config, dict):
-                timeout_val = check_config.get("timeout", 2)
+                normalized_check_config = _as_dict(check_config, f"doctor.checks.{check_name}")
+                timeout_val = normalized_check_config.get("timeout", 2)
                 timeout = int(timeout_val) if isinstance(timeout_val, (int, str, float)) else 2
-                fail_on_error_val = check_config.get("fail_on_error", True)
+                fail_on_error_val = normalized_check_config.get("fail_on_error", True)
                 fail_on_error = bool(fail_on_error_val) if isinstance(fail_on_error_val, (bool, int, str)) else True
                 merged_checks[str(check_name)] = DoctorCheckConfig(timeout=timeout, fail_on_error=fail_on_error)
 

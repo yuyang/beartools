@@ -12,6 +12,7 @@ pytest = importlib.import_module("pytest")
 
 class _AgentNodeConfigProtocol(Protocol):
     name: str
+    provider: str
     base_url: str
     model: str
     api_key: str
@@ -39,6 +40,7 @@ class _AgentNodeConfigClass(Protocol):
         self,
         *,
         name: str,
+        provider: str,
         base_url: str,
         model: str,
         api_key: str,
@@ -62,6 +64,7 @@ class _ConfigClass(Protocol):
 
 class _RuntimeNodeProtocol(Protocol):
     name: str
+    provider: str
     base_url: str
     model: str
     api_key: str
@@ -75,6 +78,7 @@ class _RuntimeNodeClass(Protocol):
         self,
         *,
         name: str,
+        provider: str,
         base_url: str,
         model: str,
         api_key: str,
@@ -192,9 +196,11 @@ def create_agent_node_config(
     api_key: str = "test-key",
     extra_headers: dict[str, str] | None = None,
     timeout_seconds: int = 30,
+    provider: str = "openai",
 ) -> _AgentNodeConfigProtocol:
     return AgentNodeConfig(
         name=name,
+        provider=provider,
         base_url=base_url or f"https://{name}.example.com/v1",
         model=model,
         api_key=api_key,
@@ -214,10 +220,17 @@ def create_runtime_node(name: str, *, extra_headers: dict[str, str] | None = Non
 
 
 class TestLLRuntime:
+    def test_runtime_node_adapts_provider(self) -> None:
+        config = create_agent_node_config("primary", provider="openrouter")
+
+        runtime_node = runtime_module.RuntimeNode.from_config(config)
+
+        assert runtime_node.provider == "openrouter"
+
     def test_sticky_selection_with_two_healthy_nodes(self) -> None:
-        primary = create_agent_node_config("primary")
-        candidate_a = create_agent_node_config("candidate-a")
-        candidate_b = create_agent_node_config("candidate-b")
+        primary = create_agent_node_config("primary", provider="openai")
+        candidate_a = create_agent_node_config("candidate-a", provider="openrouter")
+        candidate_b = create_agent_node_config("candidate-b", provider="openai")
         config = create_config(primary, candidate_a, candidate_b)
 
         def probe_node(node: _RuntimeNodeProtocol) -> None:
@@ -287,6 +300,23 @@ class TestLLRuntime:
         assert "RuntimeError" in str(exc_info.value)
         assert "secret-detail-for-primary" not in str(exc_info.value)
         assert "secret-detail-for-candidate" not in str(exc_info.value)
+
+    def test_probe_node_passes_provider_to_litellm_completion(self) -> None:
+        node = create_runtime_node("primary")
+
+        completion_calls: list[dict[str, object]] = []
+
+        class FakeLiteLLMCompletionModule(FakeLiteLLMModule):
+            @staticmethod
+            def completion(**kwargs: object) -> object:
+                completion_calls.append(kwargs)
+                return object()
+
+        with patch.object(runtime_module, "_litellm_module", return_value=FakeLiteLLMCompletionModule()):
+            runtime_module._probe_node(node)
+
+        assert completion_calls
+        assert completion_calls[0]["custom_llm_provider"] == node.provider
 
     def test_validation_error_keeps_active_node(self) -> None:
         primary = create_runtime_node("primary")

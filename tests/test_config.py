@@ -24,6 +24,7 @@ class _ConfigModule(Protocol):
 
 class _AgentNode(Protocol):
     name: str
+    provider: str
     base_url: str
     model: str
     api_key: str
@@ -96,6 +97,7 @@ class TestConfig:
 agent:
   primary:
     name: "primary-openai"
+    provider: "openai"
     base_url: "https://primary.example.com"
     model: "gpt-4o-mini"
     api_key: "primary-key"
@@ -104,12 +106,14 @@ agent:
     timeout_seconds: "45"
   candidates:
     - name: "candidate-1"
+      provider: "openrouter"
       base_url: "https://candidate1.example.com"
       model: "gpt-4o-mini"
       api_key: "candidate-key"
       extra_headers: {}
       timeout_seconds: 20
     - name: "candidate-2"
+      provider: "openai"
       base_url: "https://candidate2.example.com"
       model: "gpt-4.1-mini"
       api_key: null
@@ -121,6 +125,7 @@ agent:
         config = load_config()
 
         assert config.agent.primary.name == "primary-openai"
+        assert config.agent.primary.provider == "openai"
         assert config.agent.primary.base_url == "https://primary.example.com"
         assert config.agent.primary.model == "gpt-4o-mini"
         assert config.agent.primary.api_key == "primary-key"
@@ -128,11 +133,42 @@ agent:
         assert config.agent.primary.timeout_seconds == 45
         assert len(config.agent.candidates) == 2
         assert config.agent.candidates[0].name == "candidate-1"
+        assert config.agent.candidates[0].provider == "openrouter"
         assert config.agent.candidates[0].timeout_seconds == 20
         assert config.agent.candidates[1].name == "candidate-2"
+        assert config.agent.candidates[1].provider == "openai"
         assert config.agent.candidates[1].api_key == ""
         assert config.agent.candidates[1].extra_headers == {"X-Region": "cn"}
         assert config.agent.candidates[1].timeout_seconds == 30
+
+    def test_reject_missing_primary_provider(self) -> None:
+        self._write_config(
+            """
+agent:
+  primary:
+    name: "primary-openai"
+    base_url: "https://primary.example.com"
+    model: "gpt-4o-mini"
+"""
+        )
+
+        with pytest.raises(RuntimeError, match=r"agent\.primary\.provider 必填"):
+            load_config()
+
+    def test_reject_invalid_provider_value(self) -> None:
+        self._write_config(
+            """
+agent:
+  primary:
+    name: "primary-openai"
+    provider: "anthropic"
+    base_url: "https://primary.example.com"
+    model: "gpt-4o-mini"
+"""
+        )
+
+        with pytest.raises(RuntimeError, match=r"provider 仅支持 openai/openrouter"):
+            load_config()
 
     def test_reject_missing_primary(self) -> None:
         self._write_config(
@@ -154,6 +190,7 @@ agent:
 agent:
   primary:
     name: "primary-openai"
+    provider: "openai"
     base_url: "https://primary.example.com"
     model: "gpt-4o-mini"
   candidates:
@@ -170,6 +207,7 @@ agent:
 agent:
   primary:
     name: "primary-a"
+    provider: "openai"
     base_url: "https://primary-a.example.com"
     model: "gpt-4o-mini"
 """
@@ -186,10 +224,12 @@ agent:
 agent:
   primary:
     name: "primary-b"
+    provider: "openai"
     base_url: "https://primary-b.example.com"
     model: "gpt-4.1-mini"
   candidates:
     - name: "candidate-b"
+      provider: "openrouter"
       base_url: "https://candidate-b.example.com"
       model: "gpt-4o-mini"
       timeout_seconds: 18
@@ -212,7 +252,7 @@ agent:
 
         config = load_config()
 
-        assert config.doctor.enabled_checks == ["google_ping", "opencli", "siyuan"]
+        assert config.doctor.enabled_checks == ["google_ping", "opencli", "siyuan", "llm"]
 
     def test_invalid_doctor_enabled_checks_falls_back_to_default(self) -> None:
         self._write_config(
@@ -224,7 +264,7 @@ doctor:
 
         config = load_config()
 
-        assert config.doctor.enabled_checks == ["google_ping", "opencli", "siyuan"]
+        assert config.doctor.enabled_checks == ["google_ping", "opencli", "siyuan", "llm"]
 
     def test_sample_yaml_matches_agent_schema(self) -> None:
         sample_path = self.original_cwd / "config" / "beartools.yaml.sample"
@@ -236,6 +276,7 @@ doctor:
         assert set(agent_data.keys()) == {"primary", "candidates"}
         assert set(agent_data["primary"].keys()) == allowed_fields
         assert agent_data["primary"]["api_key"] == "REPLACE_ME"
+        assert agent_data["primary"]["provider"] in {"openai", "openrouter"}
 
         candidates = agent_data["candidates"]
         assert isinstance(candidates, list)
@@ -243,6 +284,7 @@ doctor:
         for candidate in candidates:
             assert set(candidate.keys()) == allowed_fields
             assert candidate["api_key"] == "REPLACE_ME"
+            assert candidate["provider"] in {"openai", "openrouter"}
 
         siyuan_data = sample_data["siyuan"]
         assert siyuan_data["token"] == "REPLACE_ME"

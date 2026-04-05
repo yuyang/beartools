@@ -9,7 +9,7 @@ from typing import Final, Protocol, cast, runtime_checkable
 from beartools.config import AgentNodeConfig, get_config
 
 _PROBE_MESSAGES: Final[list[dict[str, str]]] = [{"role": "user", "content": "ping"}]
-_PROBE_MAX_TOKENS: Final[int] = 1
+_PROBE_MAX_TOKENS: Final[int] = 16
 
 
 class LLMRuntimeError(RuntimeError):
@@ -27,6 +27,7 @@ class LLMRuntimeNoHealthyNodeError(LLMRuntimeInitializationError):
 @dataclass(frozen=True, slots=True)
 class RuntimeNode:
     name: str
+    provider: str
     base_url: str
     model: str
     api_key: str
@@ -45,6 +46,7 @@ class RuntimeNode:
         )
         return cls(
             name=config.name,
+            provider=config.provider,
             base_url=config.base_url,
             model=config.model,
             api_key=config.api_key,
@@ -179,6 +181,7 @@ def _probe_node(node: RuntimeNode) -> None:
         base_url=node.base_url,
         api_key=node.api_key,
         extra_headers=node.extra_headers,
+        custom_llm_provider=node.provider,
     )
 
 

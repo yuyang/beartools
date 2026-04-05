@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 class _RuntimeNodeProtocol(Protocol):
     name: str
+    provider: str
     base_url: str
     model: str
     api_key: str
@@ -21,6 +22,7 @@ class _RuntimeNodeClass(Protocol):
         self,
         *,
         name: str,
+        provider: str,
         base_url: str,
         model: str,
         api_key: str,
@@ -58,6 +60,7 @@ runtime_module = cast(_RuntimeModule, importlib.import_module("beartools.llm.run
 def create_runtime_node(name: str, *, extra_headers: dict[str, str] | None = None) -> _RuntimeNodeProtocol:
     return runtime_module.RuntimeNode(
         name=name,
+        provider="openai",
         base_url=f"https://{name}.example.com/v1",
         model="gpt-4o-mini",
         api_key=f"{name}-key",

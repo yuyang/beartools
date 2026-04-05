@@ -211,5 +211,6 @@ __marimo__/
 # beartools 本地配置和日志
 config/beartools.yaml
 log/
+.worktrees/
 
 data/record/*

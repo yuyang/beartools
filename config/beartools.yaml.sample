@@ -17,6 +17,7 @@ doctor:
     - "google_ping"
     - "opencli"
     - "siyuan"
+    - "llm"
   
   # 各检查项的具体配置
   checks:
@@ -39,6 +40,13 @@ doctor:
       # 检查失败时是否终止运行，默认：true
       fail_on_error: false
 
+    # LLM 节点健康检查配置
+    llm:
+      # 预留字段，当前探测超时仍由 agent 节点各自的 timeout_seconds 控制
+      timeout: 2
+      # 当前检查固定按失败处理，保留该字段仅为保持配置结构一致
+      fail_on_error: true
+
 # 思源笔记配置
 siyuan:
   token: "REPLACE_ME"
@@ -50,6 +58,7 @@ siyuan:
 agent:
   primary:
     name: "primary"
+    provider: "openai"
     base_url: "https://api.example.com/v1"
     model: "gpt-4.1-mini"
     api_key: "REPLACE_ME"
@@ -57,6 +66,7 @@ agent:
     timeout_seconds: 30
   candidates:
     - name: "candidate-1"
+      provider: "openrouter"
       base_url: "https://api-backup.example.com/v1"
       model: "gpt-4.1-mini"
       api_key: "REPLACE_ME"
