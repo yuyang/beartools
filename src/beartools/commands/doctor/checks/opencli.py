@@ -12,6 +12,9 @@ from typing import NamedTuple
 
 from beartools.commands.doctor.base import BaseCheck, CheckResult, CheckStatus, register_check
 from beartools.config import get_config
+from beartools.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class CommandResult(NamedTuple):
@@ -20,6 +23,26 @@ class CommandResult(NamedTuple):
     return_code: int
     stdout: str
     stderr: str
+
+
+def _summarize_output(output: str) -> str:
+    """压缩 opencli 输出，避免详情过长。"""
+    lines = output.splitlines()
+    if len(lines) <= 30:
+        return output
+
+    omitted = len(lines) - 30
+    return "\n".join([*lines[:10], f"...(省略 {omitted} 行)", *lines[-20:]])
+
+
+def _build_full_output(result: CommandResult) -> str:
+    """构建命令完整输出的日志内容。"""
+    parts: list[str] = []
+    if result.stdout.strip():
+        parts.append(f"STDOUT:\n{result.stdout.strip()}")
+    if result.stderr.strip():
+        parts.append(f"STDERR:\n{result.stderr.strip()}")
+    return "\n".join(parts).strip()
 
 
 @register_check
@@ -98,13 +121,11 @@ class OpenCliCheck(BaseCheck):
             result = await self._run_command(["opencli", "doctor"], timeout=timeout)
             duration = time.time() - start_time
 
-            # 合并输出
-            full_output = ""
-            if result.stdout.strip():
-                full_output += f"STDOUT:\n{result.stdout}\n"
-            if result.stderr.strip():
-                full_output += f"STDERR:\n{result.stderr}"
-            full_output = full_output.strip()
+            full_output = _build_full_output(result)
+            summary_output = _summarize_output(full_output) if full_output else ""
+
+            if full_output:
+                logger.info("opencli doctor 完整输出:\n%s", full_output)
 
             if result.return_code == 0:
                 return CheckResult(
@@ -112,7 +133,7 @@ class OpenCliCheck(BaseCheck):
                     status=CheckStatus.SUCCESS,
                     message="opencli 已安装且 doctor 执行成功",
                     duration=duration,
-                    detail=full_output or None,
+                    detail=summary_output or None,
                 )
 
             # 非零返回码
@@ -122,7 +143,7 @@ class OpenCliCheck(BaseCheck):
                     status=CheckStatus.FAILURE,
                     message=f"opencli doctor 执行失败，返回码 {result.return_code}",
                     duration=duration,
-                    detail=full_output or None,
+                    detail=summary_output or None,
                 )
             else:
                 return CheckResult(
@@ -130,19 +151,20 @@ class OpenCliCheck(BaseCheck):
                     status=CheckStatus.WARNING,
                     message=f"opencli doctor 返回非零码 {result.return_code}，但配置为不强制失败",
                     duration=duration,
-                    detail=full_output or None,
+                    detail=summary_output or None,
                 )
 
         except TimeoutError:
             duration = time.time() - start_time
             full_output = f"Timeout after {timeout} seconds\n"
+            summary_output = _summarize_output(full_output) if full_output else ""
 
             return CheckResult(
                 name=self.name,
                 status=CheckStatus.FAILURE if fail_on_error else CheckStatus.WARNING,
                 message=f"opencli doctor 执行超时（{timeout} 秒）",
                 duration=duration,
-                detail=full_output or None,
+                detail=summary_output or None,
             )
         except Exception as e:
             duration = time.time() - start_time

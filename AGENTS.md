@@ -85,6 +85,10 @@ uv run mypy .
 - **记录管理器**：基于SQLite的URL记录存储，支持URL查询、标记、全量查询
 - **配置系统**：支持配置文件+环境变量，配置文件位于`config/beartools.yaml`
 
+### 日志与调试规范
+- 默认不要把日志打印到 console，避免干扰命令行输出和测试结果
+- 需要排查问题时，优先查看 `log/` 目录下的日志文件，再结合必要的临时调试信息定位问题
+
 ### 数据存储位置
 - 配置文件：`config/beartools.yaml`（私有，已加入.gitignore）、`config/beartools.yaml.sample`（公开示例）
 - 日志文件：`log/`目录

@@ -77,10 +77,6 @@ def _setup_simple_config(log_config: LogConfig) -> None:
     # 创建格式化器
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
-    # 创建控制台处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-
     # 创建文件处理器（每天切分一次，保留最近30天日志）
     try:
         file_handler = TimedRotatingFileHandler(
@@ -105,7 +101,7 @@ def _setup_simple_config(log_config: LogConfig) -> None:
     root_logger.addHandler(queue_handler)
 
     # 启动QueueListener后台线程
-    _queue_listener = QueueListener(log_queue, console_handler, file_handler)
+    _queue_listener = QueueListener(log_queue, file_handler)
     _queue_listener.start()
 
     # 注册退出时的清理函数
