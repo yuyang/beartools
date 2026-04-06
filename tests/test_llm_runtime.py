@@ -5,7 +5,10 @@ import importlib
 from typing import Protocol, cast
 from unittest.mock import patch
 
+import httpx
+from openai import APIConnectionError, APITimeoutError
 from pydantic import BaseModel, ValidationError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 
 pytest = importlib.import_module("pytest")
 
@@ -144,32 +147,6 @@ runtime_module = cast(_RuntimeModule, importlib.import_module("beartools.llm.run
 pytest = cast(_PytestModule, pytest)
 
 
-class FakeLiteLLMModule:
-    class APIConnectionError(Exception):
-        pass
-
-    class InternalServerError(Exception):
-        pass
-
-    class BadGatewayError(Exception):
-        pass
-
-    class ServiceUnavailableError(Exception):
-        pass
-
-    class AuthenticationError(Exception):
-        pass
-
-    class PermissionDeniedError(Exception):
-        pass
-
-    class NotFoundError(Exception):
-        pass
-
-    class APITimeoutError(Exception):
-        pass
-
-
 class StatusCodeError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)
@@ -250,8 +227,9 @@ class TestLLRuntime:
         assert runtime.get_active_node().name == "candidate-a"
         assert [node.name for node in runtime.available_nodes] == ["primary", "candidate-a"]
         assert mock_choice.call_count == 1
-        candidate_names = [node.name for node in mock_choice.call_args.args[1]]
-        assert candidate_names == ["primary", "candidate-a"]
+        assert [
+            node.name for node in runtime.healthy_nodes if node.fingerprint != runtime.get_active_node().fingerprint
+        ] == ["primary"]
 
     def test_fail_current_call_then_reselect_future_node(self) -> None:
         primary = create_runtime_node("primary")
@@ -261,15 +239,14 @@ class TestLLRuntime:
             patch(
                 "beartools.llm.runtime.random.Random.choice",
                 autospec=True,
-                side_effect=[primary, candidate],
+                side_effect=lambda _self, seq: seq[0],
             ) as mock_choice,
-            patch.object(runtime_module, "_litellm_module", return_value=FakeLiteLLMModule()),
         ):
             runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate])
             current_call_node = runtime.get_active_node()
             changed = runtime.mark_node_failed(
                 current_call_node,
-                error=FakeLiteLLMModule.AuthenticationError("401 unauthorized"),
+                error=StatusCodeError(503, "503 service unavailable"),
             )
 
         assert changed is True
@@ -277,8 +254,7 @@ class TestLLRuntime:
         assert runtime.get_active_node() is candidate
         assert [node.name for node in runtime.available_nodes] == ["candidate"]
         assert mock_choice.call_count == 2
-        reselected_names = [node.name for node in mock_choice.call_args_list[1].args[1]]
-        assert reselected_names == ["candidate"]
+        assert runtime.get_active_node().name == "candidate"
 
     def test_raise_when_all_nodes_unhealthy(self) -> None:
         primary = create_agent_node_config("primary")
@@ -292,31 +268,106 @@ class TestLLRuntime:
             patch.object(runtime_module, "get_config", return_value=config),
             patch.object(runtime_module, "_probe_node", side_effect=probe_node),
         ):
+            with pytest.raises(RuntimeError, match="secret-detail-for-primary"):
+                runtime_module.create_llm_runtime()
+
+    def test_probe_failure_returns_sanitized_no_healthy_node_error(self) -> None:
+        primary = create_agent_node_config("primary")
+        candidate = create_agent_node_config("candidate")
+        config = create_config(primary, candidate)
+
+        def probe_node(node: _RuntimeNodeProtocol) -> None:
+            raise TimeoutError(f"probe timed out for {node.name}")
+
+        with (
+            patch.object(runtime_module, "get_config", return_value=config),
+            patch.object(runtime_module, "_probe_node", side_effect=probe_node),
+        ):
             with pytest.raises(runtime_module.LLMRuntimeNoHealthyNodeError, match="没有可用的健康节点") as exc_info:
                 runtime_module.create_llm_runtime()
 
-        assert "primary(https://primary.example.com/v1, gpt-4o-mini)" in str(exc_info.value)
-        assert "candidate(https://candidate.example.com/v1, gpt-4o-mini)" in str(exc_info.value)
-        assert "RuntimeError" in str(exc_info.value)
-        assert "secret-detail-for-primary" not in str(exc_info.value)
-        assert "secret-detail-for-candidate" not in str(exc_info.value)
+        assert "secret-detail" not in str(exc_info.value)
 
-    def test_probe_node_passes_provider_to_litellm_completion(self) -> None:
+    def test_probe_openai_sdk_failures_are_sanitized(self) -> None:
+        primary = create_agent_node_config("primary")
+        candidate = create_agent_node_config("candidate")
+        config = create_config(primary, candidate)
+
+        class FakeAPIStatusError(Exception):
+            status_code = 502
+
+        with (
+            patch.object(runtime_module, "get_config", return_value=config),
+            patch.object(runtime_module, "APIStatusError", FakeAPIStatusError),
+            patch.object(runtime_module, "_probe_node", side_effect=FakeAPIStatusError("service unavailable")),
+        ):
+            with pytest.raises(runtime_module.LLMRuntimeNoHealthyNodeError, match="没有可用的健康节点") as exc_info:
+                runtime_module.create_llm_runtime()
+
+        assert "FakeAPIStatusError" in str(exc_info.value)
+        assert "service unavailable" not in str(exc_info.value)
+
+    def test_probe_api_status_error_with_none_status_code_does_not_crash(self) -> None:
+        primary = create_agent_node_config("primary")
+        candidate = create_agent_node_config("candidate")
+        config = create_config(primary, candidate)
+
+        class FakeAPIStatusError(Exception):
+            status_code = None
+
+        with (
+            patch.object(runtime_module, "get_config", return_value=config),
+            patch.object(runtime_module, "APIStatusError", FakeAPIStatusError),
+            patch.object(runtime_module, "_probe_node", side_effect=FakeAPIStatusError("upstream error")),
+        ):
+            with pytest.raises(FakeAPIStatusError, match="upstream error"):
+                runtime_module.create_llm_runtime()
+
+    def test_probe_local_protocol_error_is_not_wrapped_as_no_healthy_node(self) -> None:
+        primary = create_agent_node_config("primary")
+        candidate = create_agent_node_config("candidate")
+        config = create_config(primary, candidate)
+
+        with (
+            patch.object(runtime_module, "get_config", return_value=config),
+            patch.object(runtime_module, "_probe_node", side_effect=httpx.LocalProtocolError("bad request framing")),
+        ):
+            with pytest.raises(httpx.LocalProtocolError, match="bad request framing"):
+                runtime_module.create_llm_runtime()
+
+    def test_probe_node_uses_openai_client_completion(self) -> None:
         node = create_runtime_node("primary")
 
         completion_calls: list[dict[str, object]] = []
+        client_kwargs: list[dict[str, object]] = []
 
-        class FakeLiteLLMCompletionModule(FakeLiteLLMModule):
+        class FakeChatCompletions:
             @staticmethod
-            def completion(**kwargs: object) -> object:
+            def create(**kwargs: object) -> object:
                 completion_calls.append(kwargs)
                 return object()
 
-        with patch.object(runtime_module, "_litellm_module", return_value=FakeLiteLLMCompletionModule()):
+        class FakeChat:
+            completions = FakeChatCompletions()
+
+        class FakeOpenAIClient:
+            chat = FakeChat()
+
+        def fake_client_factory(**kwargs: object) -> FakeOpenAIClient:
+            client_kwargs.append(kwargs)
+            return FakeOpenAIClient()
+
+        with patch.object(runtime_module, "_openai_client_factory", side_effect=fake_client_factory):
             runtime_module._probe_node(node)
 
+        assert client_kwargs[0]["base_url"] == node.base_url
+        assert client_kwargs[0]["api_key"] == node.api_key
+        assert client_kwargs[0]["timeout"] == node.timeout_seconds
+        assert client_kwargs[0]["default_headers"] == node.extra_headers
         assert completion_calls
-        assert completion_calls[0]["custom_llm_provider"] == node.provider
+        assert completion_calls[0]["model"] == node.model
+        assert completion_calls[0]["messages"] == [{"role": "user", "content": "ping"}]
+        assert completion_calls[0]["max_tokens"] == 1
 
     def test_validation_error_keeps_active_node(self) -> None:
         primary = create_runtime_node("primary")
@@ -344,13 +395,10 @@ class TestShouldInvalidateNode:
         ("error", "expected"),
         [
             (TimeoutError("timed out"), True),
-            (FakeLiteLLMModule.APITimeoutError("api timeout"), True),
-            (FakeLiteLLMModule.APIConnectionError("connection refused"), True),
-            (FakeLiteLLMModule.AuthenticationError("401 unauthorized"), True),
-            (FakeLiteLLMModule.PermissionDeniedError("403 forbidden"), True),
+            (StatusCodeError(504, "gateway timeout"), True),
+            (ConnectionError("connection refused"), False),
             (StatusCodeError(503, "upstream unavailable"), True),
-            (FakeLiteLLMModule.NotFoundError("model not found"), True),
-            (Exception("connection refused by upstream"), True),
+            (Exception("connection refused by upstream"), False),
             (StatusCodeError(429, "rate limit exceeded"), False),
             (StatusCodeError(400, "bad request"), False),
             (Exception("api key is missing in business payload"), False),
@@ -359,5 +407,75 @@ class TestShouldInvalidateNode:
         ],
     )
     def test_should_invalidate_node_classifications(self, error: Exception, expected: bool) -> None:
-        with patch.object(runtime_module, "_litellm_module", return_value=FakeLiteLLMModule()):
-            assert runtime_module.should_invalidate_node(error) is expected
+        assert runtime_module.should_invalidate_node(error) is expected
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            Exception("service unavailable"),
+            RuntimeError("gateway timeout"),
+            Exception("temporary failure in name resolution"),
+            ConnectionError("connection refused"),
+            OSError("bad gateway"),
+        ],
+    )
+    def test_plain_exception_text_does_not_invalidate_node(self, error: Exception) -> None:
+        assert runtime_module.should_invalidate_node(error) is False
+
+    def test_model_http_error_invalidation_by_status_code(self) -> None:
+        assert runtime_module.should_invalidate_node(ModelHTTPError(503, "service unavailable")) is True
+        assert runtime_module.should_invalidate_node(ModelHTTPError(400, "bad request")) is False
+
+    def test_model_api_error_invalidation_from_real_network_causes(self) -> None:
+        request = httpx.Request("GET", "https://example.com")
+        cases = [
+            APIConnectionError(message="connect failed", request=request),
+            APITimeoutError(request=request),
+            httpx.PoolTimeout("pool timeout"),
+            httpx.WriteTimeout("write timeout"),
+            httpx.ConnectError("connect error"),
+            httpx.ReadTimeout("read timeout"),
+            httpx.ConnectTimeout("connect timeout"),
+            httpx.RemoteProtocolError("remote protocol error"),
+            httpx.NetworkError("network error"),
+            TimeoutError("timeout"),
+        ]
+
+        for cause in cases:
+            error = ModelAPIError("model", "model api error")
+            error.__cause__ = cause
+            assert runtime_module.should_invalidate_node(error) is True
+
+    def test_model_api_error_without_network_cause_does_not_invalidate(self) -> None:
+        error = ModelAPIError("model", "model api error")
+        error.__cause__ = ValueError("validation failed")
+
+        assert runtime_module.should_invalidate_node(error) is False
+
+    def test_model_api_error_traverses_cause_chain(self) -> None:
+        deepest = httpx.PoolTimeout("pool timeout")
+        middle = RuntimeError("middle")
+        middle.__cause__ = deepest
+        error = ModelAPIError("model", "model api error")
+        error.__cause__ = middle
+
+        assert runtime_module.should_invalidate_node(error) is True
+
+    def test_model_api_error_traverses_context_chain(self) -> None:
+        deepest = httpx.WriteTimeout("write timeout")
+        middle = RuntimeError("middle")
+        middle.__context__ = deepest
+        error = ModelAPIError("model", "model api error")
+        error.__context__ = middle
+
+        assert runtime_module.should_invalidate_node(error) is True
+
+    def test_model_api_error_handles_cycle_in_exception_chain(self) -> None:
+        error = ModelAPIError("model", "model api error")
+        middle = RuntimeError("middle")
+        deepest = RuntimeError("deepest")
+        error.__cause__ = middle
+        middle.__context__ = deepest
+        deepest.__cause__ = error
+
+        assert runtime_module.should_invalidate_node(error) is False

@@ -86,12 +86,12 @@ def create_import_module_side_effect(
     *,
     async_openai: Mock,
     openai_chat_model: Mock,
-    litellm_provider: Mock,
+    openai_provider: Mock,
 ) -> object:
     modules = {
         "openai": SimpleNamespace(AsyncOpenAI=async_openai),
         "pydantic_ai.models.openai": SimpleNamespace(OpenAIChatModel=openai_chat_model),
-        "pydantic_ai.providers.litellm": SimpleNamespace(LiteLLMProvider=litellm_provider),
+        "pydantic_ai.providers.openai": SimpleNamespace(OpenAIProvider=openai_provider),
     }
 
     def import_module(name: str) -> object:
@@ -106,7 +106,7 @@ class TestLLFactory:
         runtime = FakeRuntime(node)
         async_openai = Mock(name="AsyncOpenAI")
         openai_chat_model = Mock(name="OpenAIChatModel", return_value="chat-model")
-        litellm_provider = Mock(name="LiteLLMProvider", return_value="provider")
+        openai_provider = Mock(name="OpenAIProvider", return_value="provider")
 
         with (
             patch.object(factory_module, "get_llm_runtime", return_value=runtime),
@@ -116,7 +116,7 @@ class TestLLFactory:
                 side_effect=create_import_module_side_effect(
                     async_openai=async_openai,
                     openai_chat_model=openai_chat_model,
-                    litellm_provider=litellm_provider,
+                    openai_provider=openai_provider,
                 ),
             ),
         ):
@@ -125,7 +125,7 @@ class TestLLFactory:
         assert model == "chat-model"
         assert runtime.get_active_node_call_count == 1
         async_openai.assert_not_called()
-        litellm_provider.assert_called_once_with(api_base=node.base_url, api_key=node.api_key)
+        openai_provider.assert_called_once_with(base_url=node.base_url, api_key=node.api_key)
         openai_chat_model.assert_called_once_with(
             model_name=node.model,
             provider="provider",
@@ -137,7 +137,7 @@ class TestLLFactory:
         runtime = FakeRuntime(node)
         async_openai = Mock(name="AsyncOpenAI", return_value="openai-client")
         openai_chat_model = Mock(name="OpenAIChatModel", return_value="chat-model")
-        litellm_provider = Mock(name="LiteLLMProvider", return_value="provider")
+        openai_provider = Mock(name="OpenAIProvider", return_value="provider")
 
         with (
             patch.object(factory_module, "get_llm_runtime", return_value=runtime),
@@ -148,7 +148,7 @@ class TestLLFactory:
                 side_effect=create_import_module_side_effect(
                     async_openai=async_openai,
                     openai_chat_model=openai_chat_model,
-                    litellm_provider=litellm_provider,
+                    openai_provider=openai_provider,
                 ),
             ),
         ):
@@ -162,7 +162,7 @@ class TestLLFactory:
             timeout=30.0,
             default_headers=node.extra_headers,
         )
-        litellm_provider.assert_called_once_with(openai_client="openai-client")
+        openai_provider.assert_called_once_with(openai_client="openai-client")
         openai_chat_model.assert_called_once_with(
             model_name=node.model,
             provider="provider",

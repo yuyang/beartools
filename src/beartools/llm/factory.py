@@ -1,6 +1,6 @@
 """LLM 模型工厂。
 
-根据运行时当前活动节点构造 PydanticAI 的 OpenAIChatModel，底层使用 LiteLLMProvider。
+根据运行时当前活动节点构造 PydanticAI 的 OpenAIChatModel。
 """
 
 from __future__ import annotations
@@ -31,14 +31,13 @@ class _OpenAIModule(Protocol):
     AsyncOpenAI: _AsyncOpenAIFactory
 
 
-class _LiteLLMProviderFactory(Protocol):
+class _OpenAIProviderFactory(Protocol):
     def __call__(
         self,
         *,
+        base_url: str | None = ...,
         api_key: str | None = ...,
-        api_base: str | None = ...,
         openai_client: object | None = ...,
-        http_client: object | None = ...,
     ) -> object: ...
 
 
@@ -50,8 +49,8 @@ class _PydanticAIModelsOpenAIModule(Protocol):
     OpenAIChatModel: _OpenAIChatModelFactory
 
 
-class _PydanticAIProvidersLiteLLMModule(Protocol):
-    LiteLLMProvider: _LiteLLMProviderFactory
+class _PydanticAIProvidersOpenAIModule(Protocol):
+    OpenAIProvider: _OpenAIProviderFactory
 
 
 class LLFactoryError(RuntimeError):
@@ -70,7 +69,7 @@ def _supports_default_headers() -> bool:
 class LLFactory:
     """基于运行时活动节点构造模型实例的轻量工厂。"""
 
-    provider: str = "litellm"
+    provider: str = "openai"
 
     def create(self, node: RuntimeNode | None = None) -> Model:
         """创建并返回当前活动节点对应的 PydanticAI 模型。"""
@@ -80,15 +79,15 @@ class LLFactory:
             _PydanticAIModelsOpenAIModule,
             importlib.import_module("pydantic_ai.models.openai"),
         )
-        pydantic_ai_providers_litellm = cast(
-            _PydanticAIProvidersLiteLLMModule,
-            importlib.import_module("pydantic_ai.providers.litellm"),
+        pydantic_ai_providers_openai = cast(
+            _PydanticAIProvidersOpenAIModule,
+            importlib.import_module("pydantic_ai.providers.openai"),
         )
         openai_module = cast(_OpenAIModule, importlib.import_module("openai"))
 
         async_openai = openai_module.AsyncOpenAI
         openai_chat_model = pydantic_ai_models_openai.OpenAIChatModel
-        litellm_provider = pydantic_ai_providers_litellm.LiteLLMProvider
+        openai_provider = pydantic_ai_providers_openai.OpenAIProvider
 
         if runtime_node.extra_headers:
             if not _supports_default_headers():
@@ -99,9 +98,9 @@ class LLFactory:
                 timeout=float(runtime_node.timeout_seconds),
                 default_headers=runtime_node.extra_headers,
             )
-            provider = litellm_provider(openai_client=openai_client)
+            provider = openai_provider(openai_client=openai_client)
         else:
-            provider = litellm_provider(api_base=runtime_node.base_url, api_key=runtime_node.api_key)
+            provider = openai_provider(base_url=runtime_node.base_url, api_key=runtime_node.api_key)
 
         return openai_chat_model(
             model_name=runtime_node.model,

@@ -42,10 +42,8 @@ def resolve_bill_structure(preview: BillPreview) -> BillStructureFileResult:
         try:
             result = cast(_BillStructureRunResult, agent.run_sync(prompt))
         except Exception as exc:
-            changed = runtime.mark_node_failed(node, error=exc)
-            if not changed:
-                raise
-            continue
+            runtime.mark_node_failed(node, error=exc)
+            raise
 
         output = result.output
         if not output.files:

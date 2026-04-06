@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import importlib
 import random
 from threading import Lock
 from typing import Final, Protocol, cast, runtime_checkable
 
+import httpx
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+
 from beartools.config import AgentNodeConfig, get_config
 
 _PROBE_MESSAGES: Final[list[dict[str, str]]] = [{"role": "user", "content": "ping"}]
-_PROBE_MAX_TOKENS: Final[int] = 16
+_PROBE_MAX_TOKENS: Final[int] = 1
+_PROBE_FAILURE_MESSAGE_KEYWORDS: Final[tuple[str, ...]] = ()
 
 
 class LLMRuntimeError(RuntimeError):
@@ -118,17 +122,27 @@ _runtime_instance: LLRuntime | None = None
 _runtime_lock = Lock()
 
 
-class _LiteLLMModule(Protocol):
-    APIConnectionError: type[BaseException]
-    InternalServerError: type[BaseException]
-    BadGatewayError: type[BaseException]
-    ServiceUnavailableError: type[BaseException]
-    AuthenticationError: type[BaseException]
-    PermissionDeniedError: type[BaseException]
-    NotFoundError: type[BaseException]
-    APITimeoutError: type[BaseException]
+class _OpenAIChatCompletionsProtocol(Protocol):
+    def create(self, **kwargs: object) -> object: ...
 
-    def completion(self, **kwargs: object) -> object: ...
+
+class _OpenAIChatProtocol(Protocol):
+    completions: _OpenAIChatCompletionsProtocol
+
+
+class _OpenAIClientProtocol(Protocol):
+    chat: _OpenAIChatProtocol
+
+
+class _OpenAIClientFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        timeout: float,
+        default_headers: dict[str, str],
+    ) -> _OpenAIClientProtocol: ...
 
 
 @runtime_checkable
@@ -136,8 +150,17 @@ class _StatusCodeError(Protocol):
     status_code: int | None
 
 
-def _litellm_module() -> _LiteLLMModule:
-    return cast(_LiteLLMModule, importlib.import_module("litellm"))
+def _openai_client_factory(
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+    default_headers: dict[str, str],
+) -> _OpenAIClientProtocol:
+    return cast(
+        _OpenAIClientProtocol,
+        OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, default_headers=default_headers),
+    )
 
 
 def _build_node_fingerprint(base_url: str, model: str, api_key: str, extra_headers: dict[str, str]) -> str:
@@ -172,16 +195,16 @@ def _collect_configured_nodes() -> list[RuntimeNode]:
 
 
 def _probe_node(node: RuntimeNode) -> None:
-    litellm_module = _litellm_module()
-    litellm_module.completion(
+    client = _openai_client_factory(
+        base_url=node.base_url,
+        api_key=node.api_key,
+        timeout=float(node.timeout_seconds),
+        default_headers=node.extra_headers,
+    )
+    client.chat.completions.create(
         model=node.model,
         messages=_PROBE_MESSAGES,
         max_tokens=_PROBE_MAX_TOKENS,
-        timeout=float(node.timeout_seconds),
-        base_url=node.base_url,
-        api_key=node.api_key,
-        extra_headers=node.extra_headers,
-        custom_llm_provider=node.provider,
     )
 
 
@@ -202,7 +225,21 @@ def _build_healthy_node_pool() -> list[RuntimeNode]:
     for node in configured_nodes:
         try:
             _probe_node(node)
-        except Exception as exc:
+        except (APIConnectionError, APITimeoutError, TimeoutError) as exc:
+            failed_reasons.append(f"{node.name}({node.base_url}, {node.model}): {_sanitize_probe_failure_reason(exc)}")
+            continue
+        except APIStatusError as exc:
+            if not isinstance(exc.status_code, int) or exc.status_code < 500:
+                raise
+            failed_reasons.append(f"{node.name}({node.base_url}, {node.model}): {_sanitize_probe_failure_reason(exc)}")
+            continue
+        except (
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+            httpx.ConnectTimeout,
+            httpx.RemoteProtocolError,
+            httpx.NetworkError,
+        ) as exc:
             failed_reasons.append(f"{node.name}({node.base_url}, {node.model}): {_sanitize_probe_failure_reason(exc)}")
             continue
         healthy_nodes.append(node)
@@ -244,56 +281,72 @@ def reset_llm_runtime() -> None:
         _runtime_instance = None
 
 
-def _failure_error_types() -> tuple[type[BaseException], ...]:
-    litellm_module = _litellm_module()
-    failure_types: list[type[BaseException]] = [
-        TimeoutError,
-        litellm_module.APIConnectionError,
-        litellm_module.InternalServerError,
-        litellm_module.BadGatewayError,
-        litellm_module.ServiceUnavailableError,
-        litellm_module.AuthenticationError,
-        litellm_module.PermissionDeniedError,
-        litellm_module.NotFoundError,
-    ]
-    try:
-        timeout_error_type = litellm_module.APITimeoutError
-    except AttributeError:
-        timeout_error_type = None
-    if timeout_error_type is not None:
-        failure_types.append(timeout_error_type)
-    return tuple(failure_types)
-
-
 def should_invalidate_node(error: BaseException) -> bool:
-    if isinstance(error, _failure_error_types()):
+    return _should_invalidate_by_type(error)
+
+
+def _should_invalidate_by_type(error: BaseException) -> bool:
+    if isinstance(error, ModelHTTPError):
+        return _should_invalidate_model_http_error(error)
+
+    if isinstance(error, ModelAPIError):
+        return _should_invalidate_model_api_error(error)
+
+    if isinstance(error, (APIConnectionError, APITimeoutError, TimeoutError)):
+        return True
+
+    if isinstance(error, APIStatusError):
+        return isinstance(error.status_code, int) and error.status_code >= 500
+
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code >= 500
+
+    if isinstance(error, (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError)):
+        return True
+
+    if isinstance(error, httpx.NetworkError):
         return True
 
     status_code = error.status_code if isinstance(error, _StatusCodeError) else None
-    if isinstance(status_code, int) and status_code >= 500:
-        return True
+    return isinstance(status_code, int) and status_code >= 500
 
-    message = str(error).lower()
-    failure_keywords = (
-        "timeout",
-        "timed out",
-        "connection",
-        "connect error",
-        "connection error",
-        "connection refused",
-        "connection reset",
-        "connection aborted",
-        "temporary failure in name resolution",
-        "name or service not known",
-        "service unavailable",
-        "bad gateway",
-        "gateway timeout",
-        "500",
-        "502",
-        "503",
-        "504",
+
+def _should_invalidate_known_network_error(error: BaseException) -> bool:
+    return isinstance(
+        error,
+        (
+            APIConnectionError,
+            APITimeoutError,
+            TimeoutError,
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+            httpx.ConnectTimeout,
+            httpx.PoolTimeout,
+            httpx.WriteTimeout,
+            httpx.RemoteProtocolError,
+            httpx.NetworkError,
+        ),
     )
-    return any(keyword in message for keyword in failure_keywords)
+
+
+def _should_invalidate_model_http_error(error: ModelHTTPError) -> bool:
+    return isinstance(error.status_code, int) and error.status_code >= 500
+
+
+def _should_invalidate_model_api_error(error: ModelAPIError) -> bool:
+    seen_errors: set[int] = set()
+    current_error: BaseException | None = error
+    for _ in range(3):
+        if current_error is None:
+            return False
+        error_id = id(current_error)
+        if error_id in seen_errors:
+            return False
+        seen_errors.add(error_id)
+        if _should_invalidate_known_network_error(current_error):
+            return True
+        current_error = current_error.__cause__ or current_error.__context__
+    return False
 
 
 __all__ = [

@@ -74,7 +74,7 @@ def test_resolve_bill_structure_returns_first_file_result() -> None:
     assert result == expected
 
 
-def test_resolve_bill_structure_failover_to_next_node() -> None:
+def test_resolve_bill_structure_marks_failed_node_and_raises_current_error() -> None:
     from beartools.bill.agent import resolve_bill_structure
     from beartools.bill.models import (
         BillFieldDetail,
@@ -138,9 +138,94 @@ def test_resolve_bill_structure_failover_to_next_node() -> None:
 
     with (
         patch("beartools.bill.agent.get_llm_runtime", return_value=runtime),
+        patch("beartools.bill.agent.LLFactory.create", return_value="model-primary") as mock_create,
+        patch("beartools.bill.agent.Agent", _FakeAgent),
+    ):
+        try:
+            resolve_bill_structure(preview)
+        except TimeoutError as exc:
+            assert str(exc) == "timed out"
+        else:
+            raise AssertionError("预期抛出 TimeoutError")
+
+    assert runtime.marked == ["primary"]
+    assert mock_create.call_count == 1
+
+
+def test_resolve_bill_structure_next_request_uses_reselected_node() -> None:
+    from beartools.bill.agent import resolve_bill_structure
+    from beartools.bill.models import (
+        BillFieldDetail,
+        BillFieldMapping,
+        BillPreview,
+        BillRemarkColumns,
+        BillStructureFileResult,
+    )
+
+    @dataclass(frozen=True)
+    class _RuntimeNode:
+        name: str
+
+    class _FakeRuntime:
+        def __init__(self) -> None:
+            self.nodes = [_RuntimeNode("primary"), _RuntimeNode("candidate")]
+            self.marked: list[str] = []
+            self.current = 0
+
+        @property
+        def available_nodes(self) -> list[_RuntimeNode]:
+            return self.nodes[self.current :]
+
+        def get_active_node(self) -> _RuntimeNode:
+            return self.available_nodes[0]
+
+        def mark_node_failed(self, node: _RuntimeNode, error: BaseException | None = None) -> bool:
+            self.marked.append(node.name)
+            self.current = 1
+            return True
+
+    preview = BillPreview(file_name="wechat.xlsx", file_type="xlsx", file_content="1: 标题")
+    expected = BillStructureFileResult(
+        file_name="wechat.xlsx",
+        source="微信",
+        header_row=2,
+        data_start_row=3,
+        field_mapping=BillFieldMapping(
+            transaction_time=BillFieldDetail(confidence="high", reason="", column_name="交易时间"),
+            counterparty=BillFieldDetail(confidence="high", reason="", column_name="交易对方"),
+            amount=BillFieldDetail(confidence="high", reason="", column_name="金额"),
+            status=BillFieldDetail(confidence="high", reason="", column_name="状态"),
+            remark_columns=BillRemarkColumns(confidence="high", reason="", column_names=["备注"]),
+        ),
+    )
+
+    @dataclass
+    class _FakeRunResult:
+        output: object
+
+    class _FakeAgent:
+        def __init__(self, model: object, **_kwargs: object) -> None:
+            self.model = model
+
+        def run_sync(self, _prompt: str) -> _FakeRunResult:
+            if self.model == "model-primary":
+                raise TimeoutError("timed out")
+            return _FakeRunResult(output=type("_Output", (), {"files": [expected]})())
+
+    runtime = _FakeRuntime()
+
+    with (
+        patch("beartools.bill.agent.get_llm_runtime", return_value=runtime),
         patch("beartools.bill.agent.LLFactory.create", side_effect=["model-primary", "model-candidate"]) as mock_create,
         patch("beartools.bill.agent.Agent", _FakeAgent),
     ):
+        try:
+            resolve_bill_structure(preview)
+        except TimeoutError:
+            pass
+        else:
+            raise AssertionError("预期首次请求抛出 TimeoutError")
+
         result = resolve_bill_structure(preview)
 
     assert result == expected
