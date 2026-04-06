@@ -21,12 +21,21 @@ doctor:
   
   # 各检查项的具体配置
   checks:
-    # Google网络连通性检查配置
+    # 科学上网 HTTPS 连通性检查配置
     google_ping:
       # 超时时间（秒），默认：2
       timeout: 2
       # 检查失败时是否终止运行，默认：true
       fail_on_error: true
+      # 至少 3 个目标返回 HTTPS 响应时视为通过
+      success_threshold: 3
+      # 并发检测目标列表
+      targets:
+        - "https://www.google.com/generate_204"
+        - "https://www.youtube.com/"
+        - "https://www.facebook.com/"
+        - "https://x.com/"
+        - "https://www.instagram.com/"
     
     # OpenCLI可用性检查配置
     opencli:

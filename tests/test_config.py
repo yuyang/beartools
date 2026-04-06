@@ -39,6 +39,14 @@ class _AgentConfig(Protocol):
 
 class _DoctorConfig(Protocol):
     enabled_checks: list[str]
+    checks: dict[str, "_DoctorCheckConfig"]
+
+
+class _DoctorCheckConfig(Protocol):
+    timeout: int
+    fail_on_error: bool
+    success_threshold: int
+    targets: list[str]
 
 
 class _Config(Protocol):
@@ -265,6 +273,72 @@ doctor:
         config = load_config()
 
         assert config.doctor.enabled_checks == ["google_ping", "opencli", "siyuan", "llm"]
+
+    def test_google_ping_extended_config_is_parsed(self) -> None:
+        self._write_config(
+            """
+doctor:
+  checks:
+    google_ping:
+      timeout: 4
+      fail_on_error: true
+      success_threshold: 3
+      targets:
+        - "https://www.google.com/generate_204"
+        - "https://www.youtube.com/"
+        - "https://www.facebook.com/"
+        - "https://x.com/"
+        - "https://www.instagram.com/"
+"""
+        )
+
+        config = load_config()
+        google_ping = config.doctor.checks["google_ping"]
+
+        assert google_ping.timeout == 4
+        assert google_ping.fail_on_error is True
+        assert google_ping.success_threshold == 3
+        assert google_ping.targets == [
+            "https://www.google.com/generate_204",
+            "https://www.youtube.com/",
+            "https://www.facebook.com/",
+            "https://x.com/",
+            "https://www.instagram.com/",
+        ]
+
+    def test_google_ping_timeout_only_uses_default_success_threshold(self) -> None:
+        self._write_config(
+            """
+doctor:
+  checks:
+    google_ping:
+      timeout: 5
+"""
+        )
+
+        config = load_config()
+        google_ping = config.doctor.checks["google_ping"]
+
+        assert google_ping.timeout == 5
+        assert google_ping.success_threshold == 3
+        assert google_ping.targets == []
+
+    def test_google_ping_sample_yaml_contains_extended_fields(self) -> None:
+        sample_path = self.original_cwd / "config" / "beartools.yaml.sample"
+        sample_data = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
+
+        google_ping = sample_data["doctor"]["checks"]["google_ping"]
+
+        assert google_ping["timeout"] == 2
+        assert google_ping["fail_on_error"] is True
+        assert google_ping["success_threshold"] == 3
+        assert google_ping["targets"] == [
+            "https://www.google.com/generate_204",
+            "https://www.youtube.com/",
+            "https://www.facebook.com/",
+            "https://x.com/",
+            "https://www.instagram.com/",
+        ]
 
     def test_sample_yaml_matches_agent_schema(self) -> None:
         sample_path = self.original_cwd / "config" / "beartools.yaml.sample"

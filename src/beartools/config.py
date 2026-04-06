@@ -44,6 +44,8 @@ class DoctorCheckConfig:
 
     timeout: int = 2
     fail_on_error: bool = True
+    success_threshold: int = 3
+    targets: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -118,7 +120,8 @@ def _parse_timeout_seconds(value: object, field_name: str) -> int:
         return int(value)
     if isinstance(value, str):
         try:
-            return int(value)
+            parsed_value = int(value)
+            return parsed_value
         except ValueError as e:
             raise RuntimeError(f"agent.{field_name} 必须是整数") from e
     raise RuntimeError(f"agent.{field_name} 必须是整数")
@@ -249,7 +252,25 @@ def _convert_to_dataclass(settings: _SettingsLike) -> Config:
                 timeout = int(timeout_val) if isinstance(timeout_val, (int, str, float)) else 2
                 fail_on_error_val = normalized_check_config.get("fail_on_error", True)
                 fail_on_error = bool(fail_on_error_val) if isinstance(fail_on_error_val, (bool, int, str)) else True
-                merged_checks[str(check_name)] = DoctorCheckConfig(timeout=timeout, fail_on_error=fail_on_error)
+                success_threshold_val = normalized_check_config.get("success_threshold", 3)
+                if isinstance(success_threshold_val, bool):
+                    success_threshold = 3
+                elif isinstance(success_threshold_val, int):
+                    success_threshold = success_threshold_val
+                elif isinstance(success_threshold_val, float):
+                    success_threshold = int(success_threshold_val)
+                elif isinstance(success_threshold_val, str) and success_threshold_val.strip():
+                    success_threshold = int(success_threshold_val)
+                else:
+                    success_threshold = 3
+                targets_val = normalized_check_config.get("targets", [])
+                targets = [str(item) for item in targets_val] if isinstance(targets_val, list) else []
+                merged_checks[str(check_name)] = DoctorCheckConfig(
+                    timeout=timeout,
+                    fail_on_error=fail_on_error,
+                    success_threshold=success_threshold,
+                    targets=targets,
+                )
 
     doctor_config = DoctorConfig(enabled_checks=enabled_checks, checks=merged_checks)
 
