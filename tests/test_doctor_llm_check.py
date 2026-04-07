@@ -128,3 +128,17 @@ class TestDoctorLLMCheck:
         assert result.status == check_module.CheckStatus.FAILURE
         assert result.message == "LLM 健康检查失败"
         assert result.detail == "没有可用的健康节点"
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_returns_failure(self) -> None:
+        check_module, _ = _load_modules()
+
+        with patch(
+            "beartools.commands.doctor.checks.llm.create_llm_runtime",
+            side_effect=RuntimeError("Error code: 429 - rate limit exceeded"),
+        ):
+            result = await check_module.LLMCheck().run()
+
+        assert result.status == check_module.CheckStatus.FAILURE
+        assert result.message == "LLM 健康检查失败"
+        assert result.detail == "Error code: 429 - rate limit exceeded"

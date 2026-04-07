@@ -95,8 +95,12 @@ async def _run_single_check(check_name: str) -> CheckResult:
 
     start_time = time.time()
     try:
+        console.print(f"begin to check {check_name}")
+        logger.info("begin to check %s", check_name)
         result = await check.run()
-        result.duration = time.time() - start_time
+        duration = time.time() - start_time
+        if result.duration <= 0:
+            result.duration = duration
         return result
     except Exception as e:
         duration = time.time() - start_time

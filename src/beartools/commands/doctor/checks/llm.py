@@ -50,3 +50,12 @@ class LLMCheck(BaseCheck):
                 duration=duration,
                 detail=str(exc),
             )
+        except Exception as exc:
+            duration = time.time() - start_time
+            return CheckResult(
+                name=self.name,
+                status=CheckStatus.FAILURE,
+                message="LLM 健康检查失败",
+                duration=duration,
+                detail=str(exc),
+            )
