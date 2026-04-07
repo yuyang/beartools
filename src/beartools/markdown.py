@@ -125,10 +125,8 @@ async def embed_images(input_path: str, output_path: str) -> list[EmbedResult]:
 
     if await aiofiles.os.path.isfile(src) and src.suffix == ".md":
         md_files = [src]
-        base_dir = src.parent
     elif await aiofiles.os.path.isdir(src):
-        md_files = await asyncio.to_thread(lambda: list(src.glob("*.md")))
-        base_dir = src
+        md_files = await asyncio.to_thread(lambda: list(src.glob("**/*.md")))
     else:
         raise ValueError(f"输入路径不存在或不是目录/md文件: {src}")
 
@@ -148,7 +146,7 @@ async def embed_images(input_path: str, output_path: str) -> list[EmbedResult]:
 
     await aiofiles.os.makedirs(dst_dir, exist_ok=True)
 
-    tasks = [_process_md_file(md_file, base_dir, dst_dir) for md_file in md_files]
+    tasks = [_process_md_file(md_file, md_file.parent, dst_dir) for md_file in md_files]
     return await asyncio.gather(*tasks)
 
 
