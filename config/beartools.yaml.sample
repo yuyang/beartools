@@ -36,6 +36,7 @@ doctor:
         - "https://www.facebook.com/"
         - "https://x.com/"
         - "https://www.instagram.com/"
+        - "https://www.baidu.com/"
     
     # OpenCLI可用性检查配置
     opencli:

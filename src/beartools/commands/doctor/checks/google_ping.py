@@ -20,6 +20,7 @@ DEFAULT_TARGETS: list[str] = [
     "https://www.facebook.com/",
     "https://x.com/",
     "https://www.instagram.com/",
+    "https://www.baidu.com/",
 ]
 DEFAULT_SUCCESS_THRESHOLD = 3
 
@@ -45,6 +46,8 @@ def _label_for_target(target: str) -> str:
         return "x"
     if "instagram.com" in target:
         return "instagram"
+    if "baidu.com" in target:
+        return "baidu"
     return target
 
 

@@ -289,6 +289,7 @@ doctor:
         - "https://www.facebook.com/"
         - "https://x.com/"
         - "https://www.instagram.com/"
+        - "https://www.baidu.com/"
 """
         )
 
@@ -304,6 +305,7 @@ doctor:
             "https://www.facebook.com/",
             "https://x.com/",
             "https://www.instagram.com/",
+            "https://www.baidu.com/",
         ]
 
     def test_google_ping_timeout_only_uses_default_success_threshold(self) -> None:
@@ -338,6 +340,7 @@ doctor:
             "https://www.facebook.com/",
             "https://x.com/",
             "https://www.instagram.com/",
+            "https://www.baidu.com/",
         ]
 
     def test_sample_yaml_matches_agent_schema(self) -> None:

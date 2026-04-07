@@ -12,6 +12,12 @@ def _load_module():
 
 
 class TestGooglePingCheck:
+    def test_default_targets_include_baidu(self) -> None:
+        module = _load_module()
+
+        assert len(module.DEFAULT_TARGETS) == 6
+        assert module.DEFAULT_TARGETS[-1] == "https://www.baidu.com/"
+
     @pytest.mark.asyncio
     async def test_run_falls_back_to_default_targets_and_threshold(self, monkeypatch) -> None:
         module = _load_module()
@@ -43,7 +49,7 @@ class TestGooglePingCheck:
         result = await module.GooglePingCheck().run()
 
         assert result.status == module.CheckStatus.FAILURE
-        assert result.message == "科学上网检查失败（2/5）"
+        assert result.message == "科学上网检查失败（2/6）"
         assert result.detail == "\n".join(
             [
                 "google: 成功 200",
@@ -51,11 +57,12 @@ class TestGooglePingCheck:
                 "facebook: 连接失败",
                 "x: 连接失败",
                 "instagram: 连接失败",
+                "baidu: 连接失败",
             ]
         )
 
     @pytest.mark.asyncio
-    async def test_run_success_when_three_of_five_targets_succeed(self, monkeypatch) -> None:
+    async def test_run_success_when_three_of_six_targets_succeed(self, monkeypatch) -> None:
         module = _load_module()
 
         async def fake_check_target(self, session, target: str, timeout: int):
@@ -65,6 +72,7 @@ class TestGooglePingCheck:
                 "https://www.facebook.com/": module._TargetCheckResult("facebook", True, "成功 200"),
                 "https://x.com/": module._TargetCheckResult("x", False, "超时"),
                 "https://www.instagram.com/": module._TargetCheckResult("instagram", False, "连接失败"),
+                "https://www.baidu.com/": module._TargetCheckResult("baidu", False, "连接失败"),
             }
             return mapping[target]
 
@@ -88,7 +96,7 @@ class TestGooglePingCheck:
         result = await module.GooglePingCheck().run()
 
         assert result.status == module.CheckStatus.SUCCESS
-        assert result.message == "科学上网检查通过（3/5）"
+        assert result.message == "科学上网检查通过（3/6）"
         assert result.detail == "\n".join(
             [
                 "google: 成功 204",
@@ -96,11 +104,12 @@ class TestGooglePingCheck:
                 "facebook: 成功 200",
                 "x: 超时",
                 "instagram: 连接失败",
+                "baidu: 连接失败",
             ]
         )
 
     @pytest.mark.asyncio
-    async def test_run_failure_when_only_two_of_five_targets_succeed(self, monkeypatch) -> None:
+    async def test_run_failure_when_only_two_of_six_targets_succeed(self, monkeypatch) -> None:
         module = _load_module()
 
         async def fake_check_target(self, session, target: str, timeout: int):
@@ -110,6 +119,7 @@ class TestGooglePingCheck:
                 "https://www.facebook.com/": module._TargetCheckResult("facebook", False, "DNS 解析失败"),
                 "https://x.com/": module._TargetCheckResult("x", False, "超时"),
                 "https://www.instagram.com/": module._TargetCheckResult("instagram", False, "连接失败"),
+                "https://www.baidu.com/": module._TargetCheckResult("baidu", False, "连接失败"),
             }
             return mapping[target]
 
@@ -133,7 +143,7 @@ class TestGooglePingCheck:
         result = await module.GooglePingCheck().run()
 
         assert result.status == module.CheckStatus.FAILURE
-        assert result.message == "科学上网检查失败（2/5）"
+        assert result.message == "科学上网检查失败（2/6）"
         assert result.detail == "\n".join(
             [
                 "google: 成功 204",
@@ -141,6 +151,7 @@ class TestGooglePingCheck:
                 "facebook: DNS 解析失败",
                 "x: 超时",
                 "instagram: 连接失败",
+                "baidu: 连接失败",
             ]
         )
 
@@ -152,6 +163,7 @@ class TestGooglePingCheck:
         assert module._label_for_target("https://www.facebook.com/") == "facebook"
         assert module._label_for_target("https://x.com/") == "x"
         assert module._label_for_target("https://www.instagram.com/") == "instagram"
+        assert module._label_for_target("https://www.baidu.com/") == "baidu"
 
     @pytest.mark.asyncio
     async def test_check_target_classifies_timeout(self, monkeypatch) -> None:
