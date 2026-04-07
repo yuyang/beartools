@@ -29,7 +29,7 @@ class SiyuanCheck(BaseCheck):
         """检查项描述"""
         return "检查思源笔记服务端口 127.0.0.1:6806 是否开放"
 
-    async def _is_port_open(self, host: str, port: int, timeout: int) -> bool:
+    async def _is_port_open(self, host: str, port: int, timeout: int) -> tuple[bool, str]:
         """检查指定端口是否开放
 
         Args:
@@ -38,15 +38,19 @@ class SiyuanCheck(BaseCheck):
             timeout: 超时时间（秒）
 
         Returns:
-            bool: 端口开放返回True，否则返回False
+            tuple[bool, str]: (是否开放, 错误信息)
         """
+        import socket
+
         try:
-            _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)  # type: ignore[misc]
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port, family=socket.AF_INET), timeout=timeout
+            )  # type: ignore[misc]
             writer.close()
             await writer.wait_closed()
-            return True
-        except (TimeoutError, ConnectionRefusedError, OSError):
-            return False
+            return True, ""
+        except (TimeoutError, ConnectionRefusedError, OSError) as e:
+            return False, f"{type(e).__name__}: {str(e)}"
 
     async def run(self) -> CheckResult:
         """执行 Siyuan 端口检查
@@ -65,7 +69,7 @@ class SiyuanCheck(BaseCheck):
         fail_on_error = check_config.fail_on_error if check_config else True
 
         try:
-            is_open = await self._is_port_open("127.0.0.1", 6806, timeout)
+            is_open, error_msg = await self._is_port_open("127.0.0.1", 6806, timeout)
             duration = time.time() - start_time
 
             if is_open:
@@ -83,7 +87,7 @@ class SiyuanCheck(BaseCheck):
                         status=CheckStatus.FAILURE,
                         message="思源笔记服务未运行，端口 6806 未开放",
                         duration=duration,
-                        detail="无法连接到 127.0.0.1:6806，请检查思源笔记是否已启动",
+                        detail=f"无法连接到 127.0.0.1:6806，错误：{error_msg}",
                     )
                 else:
                     return CheckResult(
@@ -91,7 +95,7 @@ class SiyuanCheck(BaseCheck):
                         status=CheckStatus.WARNING,
                         message="思源笔记服务未运行，端口 6806 未开放",
                         duration=duration,
-                        detail="无法连接到 127.0.0.1:6806，请检查思源笔记是否已启动",
+                        detail=f"无法连接到 127.0.0.1:6806，错误：{error_msg}",
                     )
 
         except Exception as e:

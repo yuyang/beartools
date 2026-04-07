@@ -32,12 +32,33 @@ def main(ctx: typer.Context) -> None:
         typer.echo(ctx.get_help())
 
 
-# 注册doctor作为子命令
-@app.command(name="doctor", help="运行环境健康检查")  # type: ignore
-def doctor() -> None:
-    """运行环境健康检查"""
-    doctor_command()
+# 创建doctor命令组
+doctor_app = typer.Typer(name="doctor", help="运行环境健康检查", add_completion=False)
+
+# 注册doctor作为子命令组
+app.add_typer(doctor_app, name="doctor")
+
+
+@doctor_app.command(name="run", help="运行健康检查（默认，不包含LLM检查）")  # type: ignore[misc]
+def doctor_run() -> None:
+    """运行环境健康检查（不包含LLM检查）"""
+    doctor_command(run_llm=False)
     shutdown_logging()
+
+
+@doctor_app.command(name="withall", help="运行所有健康检查，包含LLM检查")  # type: ignore[misc]
+def doctor_withall() -> None:
+    """运行所有健康检查，包含LLM检查"""
+    doctor_command(run_llm=True)
+    shutdown_logging()
+
+
+# 默认子命令，不带参数时执行run
+@doctor_app.callback(invoke_without_command=True)  # type: ignore[misc]
+def doctor_default(ctx: typer.Context) -> None:
+    """Doctor 健康检查命令组"""
+    if ctx.invoked_subcommand is None:
+        doctor_run()
 
 
 # 注册clear作为子命令

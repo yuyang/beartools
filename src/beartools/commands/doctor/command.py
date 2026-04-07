@@ -113,8 +113,11 @@ async def _run_single_check(check_name: str) -> CheckResult:
         )
 
 
-async def run_checks_stream() -> AsyncGenerator[CheckResult]:
-    """流式并发运行所有启用的检查项，每完成一个就返回一个结果
+async def run_checks_stream(enabled_checks: list[str] | None = None) -> AsyncGenerator[CheckResult]:
+    """串行运行指定的检查项，每完成一个就返回一个结果
+
+    Args:
+        enabled_checks: 要运行的检查项列表，如果为None则使用配置中的启用列表
 
     Yields:
         CheckResult: 单个检查项的执行结果
@@ -122,19 +125,17 @@ async def run_checks_stream() -> AsyncGenerator[CheckResult]:
     config = get_config()
     auto_discover_checks()
 
-    enabled_checks = config.doctor.enabled_checks
+    if enabled_checks is None:
+        enabled_checks = config.doctor.enabled_checks
 
-    # 创建所有任务
-    tasks = [asyncio.create_task(_run_single_check(check_name)) for check_name in enabled_checks]
-
-    # 按完成顺序返回结果
-    for task in asyncio.as_completed(tasks):
-        result = await task
+    # 按配置顺序串行执行检查项
+    for check_name in enabled_checks:
+        result = await _run_single_check(check_name)
         yield result
 
 
 async def run_checks() -> list[CheckResult]:
-    """并发运行所有启用的检查项，返回所有结果列表（兼容原有接口）
+    """串行运行所有启用的检查项，返回所有结果列表（兼容原有接口）
 
     Returns:
         list[CheckResult]: 所有检查项的执行结果列表
@@ -168,16 +169,27 @@ def print_summary(success_count: int, failure_count: int, warning_count: int) ->
     console.print(Text.assemble(*parts))
 
 
-async def _doctor_command_async() -> None:
-    """异步执行doctor命令，流式输出检查结果"""
+async def _doctor_command_async(run_llm: bool = False) -> None:
+    """异步执行doctor命令，流式输出检查结果
+
+    Args:
+        run_llm: 是否运行LLM检查项
+    """
     console.print("🏥 运行环境检查中...\n", style="bold blue")
+
+    config = get_config()
+    enabled_checks = config.doctor.enabled_checks.copy()
+
+    # 如果不运行LLM，从检查列表中移除
+    if not run_llm and "llm" in enabled_checks:
+        enabled_checks.remove("llm")
 
     success_count = 0
     failure_count = 0
     warning_count = 0
 
     # 流式遍历检查结果，完成一个打印一个
-    async for result in run_checks_stream():
+    async for result in run_checks_stream(enabled_checks):
         print_result(result)
         # 记录到日志
         logger.info(
@@ -204,9 +216,10 @@ async def _doctor_command_async() -> None:
     )
 
 
-def doctor_command() -> None:
+def doctor_command(run_llm: bool = False) -> None:
     """Doctor 健康检查命令入口
 
-    执行所有配置启用的健康检查，并输出彩色结果和汇总统计。
+    Args:
+        run_llm: 是否运行LLM检查项
     """
-    asyncio.run(_doctor_command_async())
+    asyncio.run(_doctor_command_async(run_llm))
