@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import importlib
+from types import SimpleNamespace
 from typing import Protocol, cast
 from unittest.mock import patch
 
@@ -335,7 +336,7 @@ class TestLLRuntime:
             with pytest.raises(httpx.LocalProtocolError, match="bad request framing"):
                 runtime_module.create_llm_runtime()
 
-    def test_probe_node_uses_openai_client_completion(self) -> None:
+    def test_probe_node_uses_minimal_openai_client_completion_request(self) -> None:
         node = create_runtime_node("primary")
 
         completion_calls: list[dict[str, object]] = []
@@ -345,7 +346,25 @@ class TestLLRuntime:
             @staticmethod
             def create(**kwargs: object) -> object:
                 completion_calls.append(kwargs)
-                return object()
+                return type(
+                    "FakeCompletionResponse",
+                    (),
+                    {
+                        "choices": [
+                            type(
+                                "FakeChoice",
+                                (),
+                                {
+                                    "message": type(
+                                        "FakeMessage",
+                                        (),
+                                        {"content": "pong"},
+                                    )()
+                                },
+                            )()
+                        ]
+                    },
+                )()
 
         class FakeChat:
             completions = FakeChatCompletions()
@@ -367,7 +386,57 @@ class TestLLRuntime:
         assert completion_calls
         assert completion_calls[0]["model"] == node.model
         assert completion_calls[0]["messages"] == [{"role": "user", "content": "ping"}]
-        assert completion_calls[0]["max_tokens"] == 1
+        assert "max_tokens" not in completion_calls[0]
+
+    def test_probe_node_accepts_response_with_text_content(self) -> None:
+        node = create_runtime_node("primary")
+
+        class FakeChatCompletions:
+            @staticmethod
+            def create(**kwargs: object) -> object:
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content="pong"),
+                        )
+                    ]
+                )
+
+        class FakeChat:
+            completions = FakeChatCompletions()
+
+        class FakeOpenAIClient:
+            chat = FakeChat()
+
+        with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
+            runtime_module._probe_node(node)
+
+    def test_probe_node_rejects_response_without_text_content(self) -> None:
+        node = create_runtime_node("primary")
+
+        class FakeChatCompletions:
+            @staticmethod
+            def create(**kwargs: object) -> object:
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content=None),
+                        )
+                    ]
+                )
+
+        class FakeChat:
+            completions = FakeChatCompletions()
+
+        class FakeOpenAIClient:
+            chat = FakeChat()
+
+        with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
+            with pytest.raises(
+                runtime_module.LLMRuntimeInitializationError,
+                match="未返回可识别的最小生成结果",
+            ):
+                runtime_module._probe_node(node)
 
     def test_validation_error_keeps_active_node(self) -> None:
         primary = create_runtime_node("primary")

@@ -12,7 +12,6 @@ from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from beartools.config import AgentNodeConfig, get_config
 
 _PROBE_MESSAGES: Final[list[dict[str, str]]] = [{"role": "user", "content": "ping"}]
-_PROBE_MAX_TOKENS: Final[int] = 1
 _PROBE_FAILURE_MESSAGE_KEYWORDS: Final[tuple[str, ...]] = ()
 
 
@@ -145,6 +144,22 @@ class _OpenAIClientFactory(Protocol):
     ) -> _OpenAIClientProtocol: ...
 
 
+class _ProbeResponseWithChoices(Protocol):
+    choices: object
+
+
+class _ProbeChoiceWithMessage(Protocol):
+    message: object
+
+
+class _ProbeMessageWithContent(Protocol):
+    content: object
+
+
+class _ProbeContentPartWithText(Protocol):
+    text: object
+
+
 @runtime_checkable
 class _StatusCodeError(Protocol):
     status_code: int | None
@@ -194,6 +209,43 @@ def _collect_configured_nodes() -> list[RuntimeNode]:
     return _deduplicate_nodes(config_nodes)
 
 
+def _ensure_probe_response_has_text(response: object) -> None:
+    """确保探测响应里至少包含一段可识别文本。"""
+    if not hasattr(response, "choices"):
+        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
+
+    response_with_choices = cast(_ProbeResponseWithChoices, response)
+    choices = response_with_choices.choices
+    if not isinstance(choices, list) or not choices:
+        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
+
+    first_choice = choices[0]
+    if not hasattr(first_choice, "message"):
+        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
+
+    choice_with_message = cast(_ProbeChoiceWithMessage, first_choice)
+    message = choice_with_message.message
+    if not hasattr(message, "content"):
+        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
+
+    message_with_content = cast(_ProbeMessageWithContent, message)
+    content = message_with_content.content
+
+    if isinstance(content, str) and content.strip():
+        return None
+
+    if isinstance(content, list):
+        for part in content:
+            if not hasattr(part, "text"):
+                continue
+            part_with_text = cast(_ProbeContentPartWithText, part)
+            text = part_with_text.text
+            if isinstance(text, str) and text.strip():
+                return None
+
+    raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
+
+
 def _probe_node(node: RuntimeNode) -> None:
     client = _openai_client_factory(
         base_url=node.base_url,
@@ -201,11 +253,11 @@ def _probe_node(node: RuntimeNode) -> None:
         timeout=float(node.timeout_seconds),
         default_headers=node.extra_headers,
     )
-    client.chat.completions.create(
+    response = client.chat.completions.create(
         model=node.model,
         messages=_PROBE_MESSAGES,
-        max_tokens=_PROBE_MAX_TOKENS,
     )
+    _ensure_probe_response_has_text(response)
 
 
 def _sanitize_probe_failure_reason(error: BaseException) -> str:
