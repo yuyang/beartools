@@ -10,13 +10,40 @@ import asyncio
 from rich.console import Console
 import typer
 
+from beartools.config import get_config
 from beartools.fetch import fetch_url
+from beartools.markdown import EmbedResult
+from beartools.siyuan import SiyuanError, SiyuanHandler
 
 console = Console()
+_siyuan_handler = SiyuanHandler()
+
+
+def _upload_to_siyuan(embed_results: list[EmbedResult]) -> None:
+    """将生成的Markdown文件上传到思源笔记"""
+    config = get_config()
+    target_notebook = config.siyuan.notebook
+    target_path = config.siyuan.path
+
+    if not target_notebook or not target_path:
+        console.print("⚠️  思源笔记配置不完整，跳过自动上传", style="yellow")
+        console.print("请在配置文件中设置 siyuan.notebook 和 siyuan.path", style="dim")
+        return
+
+    try:
+        for embed in embed_results:
+            doc_id = asyncio.run(_siyuan_handler.upload_md(str(embed.out_file), target_notebook, target_path))
+            console.print(f"✅ 已上传到思源笔记，文档ID: {doc_id}", style="green")
+    except SiyuanError as e:
+        console.print(f"❌ 上传到思源笔记失败: {e}", style="red")
+        if "连接" in str(e):
+            console.print("请检查思源笔记是否已启动，且API服务已开启", style="yellow")
+        raise typer.Exit(1) from e
 
 
 def fetch(
     url: str = typer.Argument(..., help="要抓取的 URL"),
+    upload: bool = typer.Option(True, help="是否自动上传到思源笔记，默认开启"),
 ) -> None:
     """根据 URL 抓取内容，目前支持 weixin.qq.com、x.com 和 twitter.com 域名"""
     try:
@@ -45,3 +72,7 @@ def fetch(
         for ref in embed.missing:
             console.print(f"  ⚠️  未找到图片（已保留原引用）: {ref}", style="yellow")
         console.print(f"✅ 已生成: {embed.out_file}", style="green")
+
+    # 自动上传到思源笔记
+    if upload:
+        _upload_to_siyuan(result.embed_results)
