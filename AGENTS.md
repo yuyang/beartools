@@ -10,8 +10,10 @@
 - 虚拟环境路径：`.venv`
 
 ## 依赖版本规范
-- 所有 `pyproject.toml` 中的依赖必须使用具体版本号（`==`），禁止使用 `>=`、`<=` 等范围版本
-- 添加新依赖时，先 `uv add <package>`，再查看当前安装版本并改为 `==` 锁定
+- 所有 `pyproject.toml` 中的依赖（包括生产依赖、开发依赖、类型注解依赖`types-*`等所有类型的包）**必须使用精确的具体版本号（`==`）**，严格禁止使用 `>=`、`<=`、`~=`、`*` 等任何形式的范围版本
+- 添加新依赖时，先执行 `uv add <package_name>` 安装最新版本，再到pyproject.toml中手动将版本号修改为 `==精确版本号` 锁定
+- 每次修改依赖后必须检查pyproject.toml中所有依赖版本是否均为固定版本，发现范围版本自动修正
+- `requires-python` 除外，允许使用最低版本限制
 
 ## 参考文档
 - 思源笔记API文档：https://github.com/siyuan-note/siyuan/blob/master/API_zh_CN.md
