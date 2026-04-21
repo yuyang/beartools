@@ -68,6 +68,8 @@ uv run ruff format .
 uv run mypy .
 ```
 
+**强制要求：ruff 和 mypy 是 pre-commit 必然检查的内容，所有代码在修改过程中就必须符合规范要求，不要等到提交前才做检查。**
+
 ## 三、功能模块说明
 ### 命令行功能
 - `doctor`：环境健康检查，异步并发执行，内置检查项：
@@ -132,6 +134,7 @@ uv run mypy .
 ## 五、Git 操作规范
 ### 核心规则
 - **禁止自动提交**：仅当用户明确要求"提交"/"commit"时才执行提交操作
+- `ruff` 和 `mypy` 是 pre-commit 必然检查的内容，所有代码在修改过程中就必须符合规范要求，不要等到提交前才做检查
 - 仅执行本地Git操作（status/diff/log/add/commit/branch/stash/reset），push/pull等网络操作告知用户手动执行
 - 所有提交后统一告知用户执行`git push review`
 
