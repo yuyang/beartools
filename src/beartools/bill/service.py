@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-import csv
 from pathlib import Path
 import re
+
+from openpyxl import Workbook
 
 from .agent import resolve_bill_structure
 from .models import BillFieldMapping, BillStructureFileResult, NormalizeBillFileResult, NormalizedBillRow
@@ -29,7 +30,7 @@ def normalize_bill_file(
 
     # 1. 识别账单结构
     structure = resolver(source_path)
-    output_path = _build_output_csv_path(from_value, structure.source)
+    output_path = _build_output_excel_path(from_value, structure.source)
 
     # 2. 读取并归一化所有行
     rows = read_bill_rows(source_path)
@@ -41,8 +42,8 @@ def normalize_bill_file(
     filtered_rows, ignored_lines = _apply_refund_offset(normalized_rows, row_numbers, ignored_lines)
     output_row_count = len(filtered_rows)
 
-    # 4. 写入结果CSV
-    _write_normalized_csv(output_path, filtered_rows)
+    # 4. 写入结果Excel
+    _write_normalized_excel(output_path, filtered_rows)
 
     return NormalizeBillFileResult(
         input_path=source_path,
@@ -153,21 +154,8 @@ def _build_remark(row: list[str], column_map: dict[str, int], column_names: list
     return "; ".join(parts)
 
 
-def _build_output_csv_path(from_value: str, source: str) -> Path:
-    return Path("data") / "bill" / f"{from_value}{source}.csv"
-
-
-def _normalized_row_to_csv_record(normalized_row: NormalizedBillRow) -> dict[str, str]:
-    notice = "" if normalized_row.status in ["交易成功", "退款成功"] else "focus"
-    return {
-        "原始来源": f"{normalized_row.from_value}{normalized_row.source}",
-        "交易时间": normalized_row.transaction_time,
-        "交易对方": normalized_row.counterparty,
-        "金额": normalized_row.amount,
-        "交易状态": normalized_row.status,
-        "注意": notice,
-        "备注": normalized_row.remark,
-    }
+def _build_output_excel_path(from_value: str, source: str) -> Path:
+    return Path("data") / "bill" / f"{from_value}{source}.xlsx"
 
 
 def _apply_refund_offset(
@@ -214,14 +202,32 @@ def _apply_refund_offset(
     return filtered_rows, new_ignored_lines
 
 
-def _write_normalized_csv(output_path: Path, rows: list[NormalizedBillRow]) -> None:
-    """将归一化后的行写入CSV文件"""
+def _write_normalized_excel(output_path: Path, rows: list[NormalizedBillRow]) -> None:
+    # type: ignore[misc]
+    """将归一化后的行写入Excel文件"""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=_OUTPUT_FIELDNAMES)
-        writer.writeheader()
-        for normalized_row in rows:
-            writer.writerow(_normalized_row_to_csv_record(normalized_row))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "账单明细"
+    
+    # 写入中文表头
+    ws.append(_OUTPUT_FIELDNAMES)
+    
+    # 写入行数据
+    for row in rows:
+        notice = "" if row.status in ["交易成功", "退款成功"] else "focus"
+        ws.append([
+            f"{row.from_value}{row.source}",
+            row.transaction_time,
+            row.counterparty,
+            row.amount,
+            row.status,
+            notice,
+            row.remark
+        ])
+    
+    # 保存文件
+    wb.save(output_path)
 
 
 def _validate_required_columns(column_map: dict[str, int], field_mapping: BillFieldMapping) -> None:
