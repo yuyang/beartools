@@ -203,29 +203,32 @@ def _apply_refund_offset(
 
 
 def _write_normalized_excel(output_path: Path, rows: list[NormalizedBillRow]) -> None:
-    # type: ignore[misc]
     """将归一化后的行写入Excel文件"""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     ws = wb.active
+    if ws is None:
+        raise RuntimeError("Excel工作表创建失败")
     ws.title = "账单明细"
-    
+
     # 写入中文表头
     ws.append(_OUTPUT_FIELDNAMES)
-    
+
     # 写入行数据
     for row in rows:
         notice = "" if row.status in ["交易成功", "退款成功"] else "focus"
-        ws.append([
-            f"{row.from_value}{row.source}",
-            row.transaction_time,
-            row.counterparty,
-            row.amount,
-            row.status,
-            notice,
-            row.remark
-        ])
-    
+        ws.append(
+            [  # type: ignore[misc]
+                f"{row.from_value}{row.source}",
+                row.transaction_time,
+                row.counterparty,
+                row.amount,
+                row.status,
+                notice,
+                row.remark,
+            ]
+        )
+
     # 保存文件
     wb.save(output_path)
 
