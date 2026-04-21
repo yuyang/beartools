@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Callable
 import csv
 from pathlib import Path
@@ -26,17 +27,22 @@ def normalize_bill_file(
     source_path = Path(input_path)
     resolver = structure_resolver or _default_structure_resolver
 
+    # 1. 识别账单结构
     structure = resolver(source_path)
     output_path = _build_output_csv_path(from_value, structure.source)
+
+    # 2. 读取并归一化所有行
     rows = read_bill_rows(source_path)
-    normalized_rows, ignored_lines, total_raw_data_rows = _normalize_rows(rows, structure, from_value=from_value)
-    output_row_count = len(normalized_rows)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=_OUTPUT_FIELDNAMES)
-        writer.writeheader()
-        for normalized_row in normalized_rows:
-            writer.writerow(_normalized_row_to_csv_record(normalized_row))
+    normalized_rows, ignored_lines, total_raw_data_rows, row_numbers = _normalize_rows(
+        rows, structure, from_value=from_value
+    )
+
+    # 3. 应用退款抵消逻辑
+    filtered_rows, ignored_lines = _apply_refund_offset(normalized_rows, row_numbers, ignored_lines)
+    output_row_count = len(filtered_rows)
+
+    # 4. 写入结果CSV
+    _write_normalized_csv(output_path, filtered_rows)
 
     return NormalizeBillFileResult(
         input_path=source_path,
@@ -56,7 +62,7 @@ def _default_structure_resolver(input_path: Path) -> BillStructureFileResult:
 
 def _normalize_rows(
     rows: list[list[str]], structure: BillStructureFileResult, *, from_value: str
-) -> tuple[list[NormalizedBillRow], list[int], int]:
+) -> tuple[list[NormalizedBillRow], list[int], int, list[int]]:
     if structure.header_row <= 0 or structure.data_start_row <= 0:
         raise RuntimeError("账单结构识别结果缺少有效的 header_row 或 data_start_row")
     if len(rows) < structure.header_row:
@@ -68,6 +74,7 @@ def _normalize_rows(
     _validate_required_columns(column_map, field_mapping)
 
     normalized_rows: list[NormalizedBillRow] = []
+    row_numbers: list[int] = []  # 记录每个normalized行对应的原始文件行号
     ignored_lines: list[int] = []
     data_rows = rows[structure.data_start_row - 1 :]
     total_raw_data_rows = len(data_rows)
@@ -100,18 +107,18 @@ def _normalize_rows(
             # 不是合法数字，保持原始值
             pass
 
-        normalized_rows.append(
-            NormalizedBillRow(
-                from_value=from_value,
-                source=structure.source,
-                transaction_time=_get_column_value(row, column_map, field_mapping.transaction_time.column_name),
-                counterparty=_get_column_value(row, column_map, field_mapping.counterparty.column_name),
-                amount=adjusted_amount,
-                status=status,
-                remark=_build_remark(row, column_map, field_mapping.remark_columns.column_names),
-            )
+        normalized_row = NormalizedBillRow(
+            from_value=from_value,
+            source=structure.source,
+            transaction_time=_get_column_value(row, column_map, field_mapping.transaction_time.column_name),
+            counterparty=_get_column_value(row, column_map, field_mapping.counterparty.column_name),
+            amount=adjusted_amount,
+            status=status,
+            remark=_build_remark(row, column_map, field_mapping.remark_columns.column_names),
         )
-    return normalized_rows, ignored_lines, total_raw_data_rows
+        normalized_rows.append(normalized_row)
+        row_numbers.append(original_line_number)
+    return normalized_rows, ignored_lines, total_raw_data_rows, row_numbers
 
 
 def _is_empty_row(row: list[str]) -> bool:
@@ -161,6 +168,60 @@ def _normalized_row_to_csv_record(normalized_row: NormalizedBillRow) -> dict[str
         "注意": notice,
         "备注": normalized_row.remark,
     }
+
+
+def _apply_refund_offset(
+    normalized_rows: list[NormalizedBillRow], row_numbers: list[int], ignored_lines: list[int]
+) -> tuple[list[NormalizedBillRow], list[int]]:
+    """应用退款抵消逻辑：配对相同金额的交易成功和退款成功行，两行都忽略"""
+    to_ignore_indices: set[int] = set()
+    success_by_amount: dict[float, list[int]] = defaultdict(list)  # 按金额绝对值存交易成功的行索引
+    refund_by_amount: dict[float, list[int]] = defaultdict(list)  # 按金额绝对值存退款成功的行索引
+
+    for idx, row in enumerate(normalized_rows):
+        try:
+            amount = float(row.amount)
+            abs_amount = abs(amount)
+            if row.status == "交易成功":
+                success_by_amount[abs_amount].append(idx)
+            elif row.status == "退款成功":
+                refund_by_amount[abs_amount].append(idx)
+        except (ValueError, TypeError):
+            # 非数字金额不参与匹配
+            continue
+
+    # 匹配相同金额的交易成功和退款成功，一一配对
+    for abs_amount, success_indices in success_by_amount.items():
+        if abs_amount not in refund_by_amount:
+            continue
+        refund_indices = refund_by_amount[abs_amount]
+        match_count = min(len(success_indices), len(refund_indices))
+        for i in range(match_count):
+            to_ignore_indices.add(success_indices[i])
+            to_ignore_indices.add(refund_indices[i])
+
+    # 过滤掉要忽略的行，将对应的行号加入忽略列表
+    filtered_rows: list[NormalizedBillRow] = []
+    new_ignored_lines = ignored_lines.copy()
+    for idx, (row, line_num) in enumerate(zip(normalized_rows, row_numbers, strict=True)):
+        if idx in to_ignore_indices:
+            new_ignored_lines.append(line_num)
+        else:
+            filtered_rows.append(row)
+
+    # 对忽略行号排序保持顺序
+    new_ignored_lines.sort()
+    return filtered_rows, new_ignored_lines
+
+
+def _write_normalized_csv(output_path: Path, rows: list[NormalizedBillRow]) -> None:
+    """将归一化后的行写入CSV文件"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=_OUTPUT_FIELDNAMES)
+        writer.writeheader()
+        for normalized_row in rows:
+            writer.writerow(_normalized_row_to_csv_record(normalized_row))
 
 
 def _validate_required_columns(column_map: dict[str, int], field_mapping: BillFieldMapping) -> None:
