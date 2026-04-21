@@ -53,6 +53,49 @@ def doctor_withall() -> None:
     shutdown_logging()
 
 
+@doctor_app.command(name="llm", help="专门检查所有LLM节点的详细状态")  # type: ignore[misc]
+def doctor_llm() -> None:
+    """详细检查所有LLM节点的状态"""
+    import time
+
+    from rich.console import Console
+
+    from beartools.llm.runtime import _collect_configured_nodes, _probe_node
+
+    console = Console()
+    console.print("🔍 开始检查所有LLM节点详细状态...\n", style="bold blue")
+
+    configured_nodes = _collect_configured_nodes()
+
+    if not configured_nodes:
+        console.print("❌ 未配置任何LLM节点", style="red")
+        shutdown_logging()
+        return
+
+    success_count = 0
+    failure_count = 0
+
+    for node in configured_nodes:
+        console.print(f"检查节点: {node.name} | {node.model} | {node.base_url}", style="bold")
+        start_time = time.time()
+        try:
+            _probe_node(node)
+            duration = time.time() - start_time
+            console.print(f"✅ 可用，耗时: {duration:.2f}s\n", style="green")
+            success_count += 1
+        except Exception as exc:
+            duration = time.time() - start_time
+            console.print(f"❌ 不可用，耗时: {duration:.2f}s", style="red")
+            console.print(f"  失败原因: {str(exc)}\n", style="dim red")
+            failure_count += 1
+
+    console.print(
+        f"🏁 LLM节点检查完成: 共 {len(configured_nodes)} 个节点，✅ {success_count} 个可用，❌ {failure_count} 个不可用",
+        style="bold blue",
+    )
+    shutdown_logging()
+
+
 # 默认子命令，不带参数时执行run
 @doctor_app.callback(invoke_without_command=True)  # type: ignore[misc]
 def doctor_default(ctx: typer.Context) -> None:

@@ -281,9 +281,10 @@ def _build_healthy_node_pool() -> list[RuntimeNode]:
             failed_reasons.append(f"{node.name}({node.base_url}, {node.model}): {_sanitize_probe_failure_reason(exc)}")
             continue
         except APIStatusError as exc:
-            if not isinstance(exc.status_code, int) or exc.status_code < 500:
-                raise
-            failed_reasons.append(f"{node.name}({node.base_url}, {node.model}): {_sanitize_probe_failure_reason(exc)}")
+            # 捕获所有API状态错误，包括4xx和5xx，只要有一个节点可用就行
+            failed_reasons.append(
+                f"{node.name}({node.base_url}, {node.model}): {_sanitize_probe_failure_reason(exc)}: {str(exc)}"
+            )
             continue
         except (
             httpx.ConnectError,

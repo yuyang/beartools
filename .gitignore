@@ -213,4 +213,4 @@ config/beartools.yaml
 log/
 .worktrees/
 
-data/record/*
+data/

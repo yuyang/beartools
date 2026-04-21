@@ -51,7 +51,8 @@ def print_result(result: CheckResult) -> None:
         status_mark = Text("❌ ", style="red")
         name_text = Text(result.name, style="bold red")
         message_text = Text(f"{result.message}", style="red")
-        line = Text.assemble(status_mark, name_text, ": ", message_text)
+        duration_text = Text(f" [{result.duration:.2f}s]", style="yellow")
+        line = Text.assemble(status_mark, name_text, ": ", message_text, duration_text)
         console.print(line)
         # 如果有详细信息，以灰色打印
         if result.detail:
