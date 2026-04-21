@@ -89,3 +89,6 @@ class NormalizeBillFileResult:
     output_csv_path: Path
     source: str
     row_count: int
+    ignored_lines: list[int] = field(default_factory=list)
+    total_raw_data_rows: int = 0
+    output_row_count: int = 0

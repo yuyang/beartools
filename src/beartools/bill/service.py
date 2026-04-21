@@ -12,7 +12,7 @@ from .models import BillFieldMapping, BillStructureFileResult, NormalizeBillFile
 from .reader import read_bill_preview, read_bill_rows
 
 _AMOUNT_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
-_OUTPUT_FIELDNAMES = ["from", "source", "transaction_time", "counterparty", "amount", "status", "remark"]
+_OUTPUT_FIELDNAMES = ["原始来源", "交易时间", "交易对方", "金额", "交易状态", "注意", "备注"]
 
 
 def normalize_bill_file(
@@ -29,7 +29,8 @@ def normalize_bill_file(
     structure = resolver(source_path)
     output_path = _build_output_csv_path(from_value, structure.source)
     rows = read_bill_rows(source_path)
-    normalized_rows = _normalize_rows(rows, structure, from_value=from_value)
+    normalized_rows, ignored_lines, total_raw_data_rows = _normalize_rows(rows, structure, from_value=from_value)
+    output_row_count = len(normalized_rows)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=_OUTPUT_FIELDNAMES)
@@ -41,7 +42,10 @@ def normalize_bill_file(
         input_path=source_path,
         output_csv_path=output_path,
         source=structure.source,
-        row_count=len(normalized_rows),
+        row_count=output_row_count,
+        ignored_lines=ignored_lines,
+        total_raw_data_rows=total_raw_data_rows,
+        output_row_count=output_row_count,
     )
 
 
@@ -52,7 +56,7 @@ def _default_structure_resolver(input_path: Path) -> BillStructureFileResult:
 
 def _normalize_rows(
     rows: list[list[str]], structure: BillStructureFileResult, *, from_value: str
-) -> list[NormalizedBillRow]:
+) -> tuple[list[NormalizedBillRow], list[int], int]:
     if structure.header_row <= 0 or structure.data_start_row <= 0:
         raise RuntimeError("账单结构识别结果缺少有效的 header_row 或 data_start_row")
     if len(rows) < structure.header_row:
@@ -64,23 +68,50 @@ def _normalize_rows(
     _validate_required_columns(column_map, field_mapping)
 
     normalized_rows: list[NormalizedBillRow] = []
-    for row in rows[structure.data_start_row - 1 :]:
+    ignored_lines: list[int] = []
+    data_rows = rows[structure.data_start_row - 1 :]
+    total_raw_data_rows = len(data_rows)
+
+    for index, row in enumerate(data_rows):
+        original_line_number = structure.data_start_row + index
         if _is_empty_row(row):
+            ignored_lines.append(original_line_number)
             continue
         if _is_summary_row(row, column_map, field_mapping):
+            ignored_lines.append(original_line_number)
+            # 汇总行之后的所有行都忽略
+            for remaining_index in range(index + 1, len(data_rows)):
+                ignored_lines.append(structure.data_start_row + remaining_index)
             break
+        raw_amount = _normalize_amount(_get_column_value(row, column_map, field_mapping.amount.column_name))
+        status = _get_column_value(row, column_map, field_mapping.status.column_name)
+        adjusted_amount = raw_amount
+
+        # 尝试转换为数字进行正负调整，转换失败保持原样
+        try:
+            amount_num = float(raw_amount)
+            if status == "退款成功":
+                # 退款成功强制为负数
+                adjusted_amount = f"{-abs(amount_num):g}"
+            elif status == "交易成功":
+                # 交易成功强制为正数
+                adjusted_amount = f"{abs(amount_num):g}"
+        except (ValueError, TypeError):
+            # 不是合法数字，保持原始值
+            pass
+
         normalized_rows.append(
             NormalizedBillRow(
                 from_value=from_value,
                 source=structure.source,
                 transaction_time=_get_column_value(row, column_map, field_mapping.transaction_time.column_name),
                 counterparty=_get_column_value(row, column_map, field_mapping.counterparty.column_name),
-                amount=_normalize_amount(_get_column_value(row, column_map, field_mapping.amount.column_name)),
-                status=_get_column_value(row, column_map, field_mapping.status.column_name),
+                amount=adjusted_amount,
+                status=status,
                 remark=_build_remark(row, column_map, field_mapping.remark_columns.column_names),
             )
         )
-    return normalized_rows
+    return normalized_rows, ignored_lines, total_raw_data_rows
 
 
 def _is_empty_row(row: list[str]) -> bool:
@@ -120,14 +151,15 @@ def _build_output_csv_path(from_value: str, source: str) -> Path:
 
 
 def _normalized_row_to_csv_record(normalized_row: NormalizedBillRow) -> dict[str, str]:
+    notice = "" if normalized_row.status in ["交易成功", "退款成功"] else "focus"
     return {
-        "from": normalized_row.from_value,
-        "source": normalized_row.source,
-        "transaction_time": normalized_row.transaction_time,
-        "counterparty": normalized_row.counterparty,
-        "amount": normalized_row.amount,
-        "status": normalized_row.status,
-        "remark": normalized_row.remark,
+        "原始来源": f"{normalized_row.from_value}{normalized_row.source}",
+        "交易时间": normalized_row.transaction_time,
+        "交易对方": normalized_row.counterparty,
+        "金额": normalized_row.amount,
+        "交易状态": normalized_row.status,
+        "注意": notice,
+        "备注": normalized_row.remark,
     }
 
 
