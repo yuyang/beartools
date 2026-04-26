@@ -7,14 +7,26 @@ from collections.abc import Callable
 from pathlib import Path
 import re
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.cell.cell import Cell, MergedCell
+from openpyxl.worksheet.worksheet import Worksheet
 
-from .agent import resolve_bill_structure
-from .models import BillFieldMapping, BillStructureFileResult, NormalizeBillFileResult, NormalizedBillRow
+from .agent import analyze_bill_row, resolve_bill_structure
+from .models import (
+    AnalyzeBillFileResult,
+    BillAnalysisResult,
+    BillFieldMapping,
+    BillStructureFileResult,
+    NormalizeBillFileResult,
+    NormalizedBillRow,
+    RunBillPipelineResult,
+)
 from .reader import read_bill_preview, read_bill_rows
 
 _AMOUNT_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
-_OUTPUT_FIELDNAMES = ["原始来源", "交易时间", "交易对方", "金额", "交易状态", "注意", "备注"]
+_NORMALIZE_OUTPUT_FIELDNAMES = ["原始来源", "交易时间", "交易对方", "金额", "交易状态", "注意", "备注"]
+_ANALYSIS_REQUIRED_HEADERS = ["原始来源", "交易时间", "交易对方", "金额", "交易状态", "注意", "备注"]
+_MAX_FAILURE_ROWS = 5
 
 
 def normalize_bill_file(
@@ -23,7 +35,7 @@ def normalize_bill_file(
     *,
     structure_resolver: Callable[[Path], BillStructureFileResult] | None = None,
 ) -> NormalizeBillFileResult:
-    """将单个账单文件归一化输出为统一 CSV。"""
+    """将单个账单文件归一化输出为统一 Excel。"""
 
     source_path = Path(input_path)
     resolver = structure_resolver or _default_structure_resolver
@@ -47,7 +59,7 @@ def normalize_bill_file(
 
     return NormalizeBillFileResult(
         input_path=source_path,
-        output_csv_path=output_path,
+        output_path=output_path,
         source=structure.source,
         row_count=output_row_count,
         ignored_lines=ignored_lines,
@@ -212,7 +224,7 @@ def _write_normalized_excel(output_path: Path, rows: list[NormalizedBillRow]) ->
     ws.title = "账单明细"
 
     # 写入中文表头
-    ws.append(_OUTPUT_FIELDNAMES)
+    ws.append(_NORMALIZE_OUTPUT_FIELDNAMES)
 
     # 写入行数据
     for row in rows:
@@ -262,3 +274,200 @@ def _is_summary_row(row: list[str], column_map: dict[str, int], field_mapping: B
 def _looks_like_transaction_time(value: str) -> bool:
     normalized = value.strip()
     return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}(?::\d{2})?)?", normalized))
+
+
+def analyze_bill_file(
+    input_path: str | Path,
+    *,
+    row_analyzer: Callable[[str, str, str, str], BillAnalysisResult] = analyze_bill_row,
+) -> AnalyzeBillFileResult:
+    """分析归一化后的账单文件，每行分析得到用途和归属人，追加列输出到新文件。
+
+    Args:
+        input_path: 归一化结果的xlsx文件路径
+        row_analyzer: 自定义行分析函数，接收(交易对方, 备注, 交易状态, 金额)，返回分析结果，
+            默认使用analyze_bill_row进行LLM分析
+
+    Returns:
+        分析结果对象
+
+    Raises:
+        ValueError: 如果输入不是xlsx
+        RuntimeError: 如果表头不匹配，或失败行数超过阈值
+    """
+    input_path = Path(input_path)
+
+    # 1. 验证输入格式
+    if input_path.suffix.lower() != ".xlsx":
+        raise ValueError("只支持归一化结果 .xlsx 输入")
+
+    # 2. 加载工作簿并验证表头
+    wb = load_workbook(input_path)
+    ws = wb.active
+    if ws is None or ws.max_row < 1:
+        raise RuntimeError("输入文件为空工作表")
+
+    headers = _load_and_validate_headers(ws)
+    column_index_map = {header: idx for idx, header in enumerate(headers)}
+    processed_rows = _prepare_output_headers(headers)
+
+    # 3. 处理所有数据行
+    total_rows, failed_count = _process_data_rows(ws, column_index_map, processed_rows, row_analyzer, input_path)
+
+    # 4. 写入输出文件
+    output_path = _write_analysis_output(input_path, processed_rows)
+
+    return AnalyzeBillFileResult(
+        input_path=input_path,
+        output_path=output_path,
+        total_rows=total_rows,
+        failed_rows=failed_count,
+    )
+
+
+def _load_and_validate_headers(ws: Worksheet) -> list[str]:
+    """加载并验证分析所需的必填表头。"""
+    headers: list[str] = []
+    for cell in ws[1]:
+        if cell.value is not None:
+            headers.append(str(cell.value).strip())
+        else:
+            headers.append("")
+
+    missing_headers = [h for h in _ANALYSIS_REQUIRED_HEADERS if h not in headers]
+    if missing_headers:
+        raise RuntimeError(
+            f"输入文件表头不匹配，需要包含固定表头: {', '.join(_ANALYSIS_REQUIRED_HEADERS)}，缺少: {', '.join(missing_headers)}"
+        )
+    return headers
+
+
+def _prepare_output_headers(headers: list[str]) -> list[list[str | None]]:
+    """准备输出表头，追加 purpose 和 owner 列。"""
+    output_headers: list[str | None] = list(headers)
+    if "purpose" not in output_headers:
+        output_headers.append("purpose")
+    if "owner" not in output_headers:
+        output_headers.append("owner")
+    return [output_headers]
+
+
+def _process_data_rows(
+    ws: Worksheet,
+    column_index_map: dict[str, int],
+    processed_rows: list[list[str | None]],
+    row_analyzer: Callable[[str, str, str, str], BillAnalysisResult],
+    input_path: Path,
+) -> tuple[int, int]:
+    """处理所有数据行，执行分析并收集结果。"""
+    failed_count = 0
+    total_rows = 0
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        total_rows += 1
+        original_values = _extract_original_row_values(row)
+
+        # 提取需要分析的字段
+        counterparty = original_values[column_index_map["交易对方"]] or ""
+        remark = original_values[column_index_map["备注"]] or ""
+        status = original_values[column_index_map["交易状态"]] or ""
+        amount = original_values[column_index_map["金额"]] or ""
+
+        # 分析当前行
+        purpose, owner = _analyze_single_row(counterparty, remark, status, amount, row_analyzer)
+
+        if purpose == "unknow" and owner == "unknow":
+            failed_count += 1
+
+        # 检查失败阈值
+        if failed_count > _MAX_FAILURE_ROWS:
+            output_path = input_path.with_name(f"{input_path.stem}.analysis.xlsx")
+            if output_path.exists():
+                output_path.unlink()
+            raise RuntimeError(f"分析失败行数超过阈值({_MAX_FAILURE_ROWS})，已达到 {failed_count} 行，终止处理")
+
+        # 追加分析结果
+        original_values.append(purpose)
+        original_values.append(owner)
+        processed_rows.append(original_values)
+
+    return total_rows, failed_count
+
+
+def _extract_original_row_values(row: tuple[Cell | MergedCell, ...]) -> list[str | None]:
+    """提取原始行的单元格值，转换为字符串并去除首尾空白。"""
+    original_values: list[str | None] = []
+    for cell in row:
+        if cell.value is None:
+            original_values.append(None)
+        else:
+            original_values.append(str(cell.value).strip())
+    return original_values
+
+
+def _analyze_single_row(
+    counterparty: str,
+    remark: str,
+    status: str,
+    amount: str,
+    row_analyzer: Callable[[str, str, str, str], BillAnalysisResult],
+) -> tuple[str, str]:
+    """分析单行账单数据，返回(用途, 归属人)。"""
+    purpose: str
+    owner: str
+    try:
+        analysis = row_analyzer(counterparty, remark, status, amount)
+        purpose = analysis.purpose
+        owner = analysis.owner
+    except Exception:
+        purpose = "unknow"
+        owner = "unknow"
+    return purpose, owner
+
+
+def _write_analysis_output(input_path: Path, processed_rows: list[list[str | None]]) -> Path:
+    """将分析结果写入输出Excel文件。"""
+    output_path = input_path.with_name(f"{input_path.stem}.analysis.xlsx")
+    output_wb = Workbook()
+    output_ws = output_wb.active
+    if output_ws is None:
+        raise RuntimeError("创建输出Excel工作表失败")
+
+    for row_data in processed_rows:
+        output_ws.append(row_data)
+
+    output_wb.save(output_path)
+    return output_path
+
+
+def run_bill_pipeline(
+    input_path: str | Path,
+    from_value: str,
+    *,
+    structure_resolver: Callable[[Path], BillStructureFileResult] | None = None,
+    row_analyzer: Callable[[str, str, str, str], BillAnalysisResult] = analyze_bill_row,
+) -> RunBillPipelineResult:
+    """串联 normalize 与 analysis，完成从原始账单到最终分析的完整流程。"""
+    input_path_obj = Path(input_path)
+
+    # 第一步 normalize
+    normalize_result = normalize_bill_file(input_path_obj, from_value, structure_resolver=structure_resolver)
+
+    # 第二步 analysis，确保失败时清理分析输出
+    try:
+        analyze_result = analyze_bill_file(normalize_result.output_path, row_analyzer=row_analyzer)
+    except Exception:
+        candidate = normalize_result.output_path.with_suffix("").with_suffix(".analysis.xlsx")
+        if candidate.exists():
+            candidate.unlink()
+        raise
+
+    return RunBillPipelineResult(
+        input_path=input_path_obj,
+        normalized_output_path=normalize_result.output_path,
+        analysis_output_path=analyze_result.output_path,
+        source=normalize_result.source,
+        normalized_row_count=normalize_result.output_row_count,
+        analysis_total_rows=analyze_result.total_rows,
+        analysis_failed_rows=analyze_result.failed_rows,
+    )

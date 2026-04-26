@@ -10,7 +10,12 @@ from beartools.llm.factory import LLFactory
 from beartools.llm.runtime import get_llm_runtime
 from beartools.prompt import get_prompt_manager
 
-from .models import BillPreview, BillStructureFileResult, BillStructureResult
+from .models import (
+    BillAnalysisResult,
+    BillPreview,
+    BillStructureFileResult,
+    BillStructureResult,
+)
 
 
 class _BillStructureRunResult(Protocol):
@@ -51,3 +56,36 @@ def resolve_bill_structure(preview: BillPreview) -> BillStructureFileResult:
         return output.files[0]
 
     raise RuntimeError("LLM 请求失败，且没有可用的健康节点")
+
+
+class _BillAnalysisRunResult(Protocol):
+    output: BillAnalysisResult
+
+
+def analyze_bill_row(
+    counterparty: str,
+    remark: str,
+    status: str,
+    amount: str,
+) -> BillAnalysisResult:
+    """调用 LLM 分析单行账单交易对方和交易用途。"""
+
+    prompt = get_prompt_manager().render(
+        "bill_transaction_analysis",
+        {
+            "counterparty": counterparty,
+            "remark": remark,
+            "status": status,
+            "amount": amount,
+        },
+    )
+    runtime = get_llm_runtime()
+    node = runtime.get_active_node()
+    model = LLFactory().create(node=node)
+    agent = Agent(
+        model,
+        output_type=BillAnalysisResult,
+        system_prompt="你是账单分类分析助手，只能返回符合 schema 的 JSON。",
+    )
+    result = cast(_BillAnalysisRunResult, agent.run_sync(prompt))
+    return result.output

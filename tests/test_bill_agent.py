@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Protocol
 from unittest.mock import Mock, patch
 
+import pytest
+
 
 class _RuntimeNodeLike(Protocol):
     name: str
@@ -277,3 +279,98 @@ def test_resolve_bill_structure_raises_without_failover() -> None:
 
     runtime.mark_node_failed.assert_called_once()
     assert mock_create.call_count == 1
+
+
+def test_analyze_bill_row_returns_correct_result() -> None:
+    from beartools.bill.agent import analyze_bill_row
+    from beartools.bill.models import (
+        BillAnalysisResult,
+    )
+
+    expected = BillAnalysisResult(
+        owner="vv",
+        purpose="餐饮消费/午晚餐",
+    )
+
+    @dataclass
+    class _FakeRunResult:
+        output: object
+
+    class _FakeAgent:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def run_sync(self, _prompt: str) -> _FakeRunResult:
+            return _FakeRunResult(output=expected)
+
+    class _FakePromptManager:
+        def render(self, *_args: object, **_kwargs: object) -> str:
+            return "fake prompt"
+
+    @dataclass(frozen=True)
+    class _RuntimeNode:
+        name: str
+
+    class _FakeRuntime:
+        @property
+        def available_nodes(self) -> list[_RuntimeNode]:
+            return [_RuntimeNode("primary")]
+
+        def get_active_node(self) -> _RuntimeNode:
+            return self.available_nodes[0]
+
+    with (
+        patch("beartools.bill.agent.get_prompt_manager", return_value=_FakePromptManager()),
+        patch("beartools.bill.agent.get_llm_runtime", return_value=_FakeRuntime()),
+        patch("beartools.bill.agent.LLFactory.create", return_value="fake-model"),
+        patch("beartools.bill.agent.Agent", _FakeAgent),
+    ):
+        result = analyze_bill_row(
+            counterparty="美团",
+            remark="美团外卖订单",
+            status="交易成功",
+            amount="35.80",
+        )
+
+    assert result == expected
+
+
+def test_analyze_bill_row_propagates_exception() -> None:
+    from beartools.bill.agent import analyze_bill_row
+
+    class _FakeAgent:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def run_sync(self, _prompt: str) -> None:
+            raise ConnectionError("network error")
+
+    class _FakePromptManager:
+        def render(self, *_args: object, **_kwargs: object) -> str:
+            return "fake prompt"
+
+    @dataclass(frozen=True)
+    class _RuntimeNode:
+        name: str
+
+    class _FakeRuntime:
+        @property
+        def available_nodes(self) -> list[_RuntimeNode]:
+            return [_RuntimeNode("primary")]
+
+        def get_active_node(self) -> _RuntimeNode:
+            return self.available_nodes[0]
+
+    with (
+        patch("beartools.bill.agent.get_prompt_manager", return_value=_FakePromptManager()),
+        patch("beartools.bill.agent.get_llm_runtime", return_value=_FakeRuntime()),
+        patch("beartools.bill.agent.LLFactory.create", return_value="fake-model"),
+        patch("beartools.bill.agent.Agent", _FakeAgent),
+    ):
+        with pytest.raises(ConnectionError, match="network error"):
+            analyze_bill_row(
+                counterparty="美团",
+                remark="美团外卖订单",
+                status="交易成功",
+                amount="35.80",
+            )

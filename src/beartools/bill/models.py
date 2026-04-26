@@ -86,9 +86,71 @@ class NormalizeBillFileResult:
     """单文件归一化结果。"""
 
     input_path: Path
-    output_csv_path: Path
+    output_path: Path
     source: str
     row_count: int
     ignored_lines: list[int] = field(default_factory=list)
     total_raw_data_rows: int = 0
     output_row_count: int = 0
+
+
+BillAnalysisOwner = Literal["vv", "yy", "团团", "all"]
+"""账单归属人类型别名。"""
+
+BillAnalysisPurpose = Literal[
+    "出行",
+    "房租",
+    "房贷",
+    "学费",
+    "食物",
+    "衣服",
+    "外出吃饭",
+    "车",
+    "娱乐",
+    "人情",
+    "爱自己",
+    "家居",
+    "物业",
+    "医疗",
+    "家政",
+    "通信",
+    "交通",
+    "工作",
+    "书",
+    "保养",
+    "物流",
+    "运费",
+    "日常",
+]
+"""账单交易用途类型别名。"""
+
+
+@dataclass(slots=True)
+class BillAnalysisResult:
+    """单行账单分析结果。"""
+
+    purpose: BillAnalysisPurpose
+    owner: BillAnalysisOwner
+
+
+@dataclass(slots=True)
+class AnalyzeBillFileResult:
+    """整个账单文件分析结果。"""
+
+    input_path: Path
+    output_path: Path
+    total_rows: int
+    failed_rows: int = 0
+
+
+@dataclass(slots=True)
+class RunBillPipelineResult:
+    """run_bill_pipeline的结果。"""
+
+    input_path: Path
+    normalized_output_path: Path
+    analysis_output_path: Path
+    source: str
+    normalized_row_count: int
+    analysis_total_rows: int
+    analysis_failed_rows: int
