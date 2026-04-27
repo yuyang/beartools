@@ -11,12 +11,17 @@ from beartools.bill import analyze_bill_file, normalize_bill_file, run_bill_pipe
 
 console = Console()
 
+# 标准 Typer app，包含所有子命令
+app = typer.Typer(help="账单处理相关操作，直接输入文件路径默认执行完整流程")
 
+
+@app.command(name="normalize", help="将单个账单文件归一化为统一 Excel")  # type: ignore[misc]
 def normalize_bill(
-    input_path: str,
-    from_value: str | None,
+    input_path: str = typer.Argument(..., help="输入账单文件路径，支持 CSV/Excel"),
+    from_value: str | None = typer.Argument(None, help="from 字段值，同时参与输出文件名拼接，默认值：yy"),
 ) -> None:
     """将单个账单文件归一化为统一 Excel。"""
+
     if from_value is None:
         from_value = cast(str, typer.prompt("请输入from值", default="yy"))
 
@@ -48,10 +53,12 @@ def normalize_bill(
         console.print("\n✅ 归一化完成", style="green")
 
 
+@app.command(name="analysis", help="分析归一化后的账单文件，添加用途和归属人列")  # type: ignore[misc]
 def analyze_bill(
-    input_path: str,
+    input_path: str = typer.Argument(..., help="归一化后的账单xlsx文件路径"),
 ) -> None:
-    """分析归一化后的账单文件。"""
+    """分析归一化后的账单文件，每行自动分析交易用途和归属人并输出结果文件。"""
+
     try:
         result = analyze_bill_file(input_path)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
@@ -64,11 +71,13 @@ def analyze_bill(
     console.print("\n✅ 分析完成", style="green")
 
 
+@app.command(name="run", help="完整流程：原始账单 → 归一化 → 分析")  # type: ignore[misc]
 def run_bill(
-    input_path: str,
-    from_value: str | None,
+    input_path: str = typer.Argument(..., help="输入账单文件路径，支持 CSV/Excel"),
+    from_value: str | None = typer.Argument(None, help="from 字段值，同时参与输出文件名拼接，默认值：yy"),
 ) -> None:
     """完整流程：原始账单 → 归一化 → 分析。"""
+
     if from_value is None:
         from_value = cast(str, typer.prompt("请输入from值", default="yy"))
 
@@ -85,48 +94,3 @@ def run_bill(
     console.print(f"分析总行数: {result.analysis_total_rows}")
     console.print(f"分析失败行数: {result.analysis_failed_rows}")
     console.print("\n✅ 完整流程完成", style="green")
-
-
-def bill_command(
-    ctx: typer.Context,
-    args: list[str] = typer.Argument(None, help="原始账单文件路径，或子命令参数"),  # noqa: B008
-) -> None:
-    """账单处理相关操作，直接输入文件路径默认执行完整流程。
-
-    子命令:
-      normalize 将单个账单文件归一化为统一 Excel
-      analysis  分析归一化后的账单文件，添加用途和归属人列
-      run       完整流程：原始账单 → 归一化 → 分析
-    """
-    if not args:
-        console.print(ctx.command.get_help(ctx))
-        return
-
-    first = args[0]
-    if first in ["-h", "--help"]:
-        console.print(ctx.command.get_help(ctx))
-        return
-    elif first == "normalize":
-        input_path = args[1] if len(args) > 1 else None
-        if input_path is None:
-            console.print(ctx.command.get_help(ctx))
-            return
-        from_value = args[2] if len(args) > 2 else None
-        normalize_bill(input_path, from_value)
-    elif first == "analysis":
-        input_path = args[1] if len(args) > 1 else None
-        if input_path is None:
-            console.print(ctx.command.get_help(ctx))
-            return
-        analyze_bill(input_path)
-    elif first == "run":
-        input_path = args[1] if len(args) > 1 else None
-        if input_path is None:
-            console.print(ctx.command.get_help(ctx))
-            return
-        from_value = args[2] if len(args) > 2 else None
-        run_bill(input_path, from_value)
-    else:
-        input_path = first
-        from_value = args[1] if len(args) > 1 else None
-        run_bill(input_path, from_value)

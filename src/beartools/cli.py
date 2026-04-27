@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import sys
+
 import typer
 
-from beartools.commands.bill import bill_command
+from beartools.commands.bill import bill_app
 from beartools.commands.clear.command import clear_command
 from beartools.commands.doctor.command import doctor_command
 from beartools.commands.fetch.command import fetch
@@ -25,7 +27,7 @@ app = typer.Typer(
 
 
 # 主回调，无参数时显示帮助
-@app.callback(invoke_without_command=True)  # type: ignore
+@app.callback(invoke_without_command=True)  # type: ignore[misc]
 def main(ctx: typer.Context) -> None:
     """beartools 主入口，无参数时显示帮助。"""
     if ctx.invoked_subcommand is None:
@@ -34,14 +36,14 @@ def main(ctx: typer.Context) -> None:
 
 
 # 注册doctor作为子命令
-@app.command(name="doctor", help="运行环境健康检查")  # type: ignore
+@app.command(name="doctor", help="运行环境健康检查")  # type: ignore[misc]
 def doctor() -> None:
     """运行环境健康检查"""
     doctor_command()
 
 
 # 注册clear作为子命令
-@app.command(name="clear", help="删除临时文件")  # type: ignore
+@app.command(name="clear", help="删除临时文件")  # type: ignore[misc]
 def clear() -> None:
     """删除临时文件"""
     clear_command()
@@ -57,12 +59,36 @@ app.add_typer(record_app, name="record", help="记录管理相关操作")
 # 注册markdown作为子命令
 app.add_typer(markdown_app, name="markdown", help="Markdown 文件处理相关操作")
 
-# 注册bill命令，支持默认调用
-app.command(name="bill", help="账单处理相关操作，直接输入文件路径默认执行完整流程")(bill_command)
+# 注册bill作为子命令
+app.add_typer(bill_app, name="bill", help="账单处理相关操作，直接输入文件路径默认执行完整流程")
 
 # 注册fetch作为子命令
 app.command(name="fetch", help="根据URL抓取内容")(fetch)
 
 
-if __name__ == "__main__":
+def _main_wrapper() -> None:
+    """
+    主函数包装器，支持 bill 命令的默认行为：
+    如果用户输入 `beartools bill <input> <from>`，自动插入 `run` 子命令
+    """
+    argv = sys.argv[:]
+    bill_index = -1
+    for i, arg in enumerate(argv):
+        if arg == "bill":
+            bill_index = i
+            break
+
+    # 如果找到了 bill，检查后面的参数
+    if bill_index != -1 and bill_index + 1 < len(argv):
+        first_arg = argv[bill_index + 1]
+        # 如果不是已知的子命令或帮助选项，插入 run
+        if first_arg not in ["normalize", "analysis", "run", "--help", "-h"]:
+            argv.insert(bill_index + 1, "run")
+
+    # 更新 sys.argv 并运行
+    sys.argv = argv
     app()
+
+
+if __name__ == "__main__":
+    _main_wrapper()
