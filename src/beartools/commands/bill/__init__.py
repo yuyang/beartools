@@ -1,5 +1,5 @@
 """账单命令包。"""
 
-from .command import bill_app
+from .command import bill_command
 
-__all__ = ["bill_app"]
+__all__ = ["bill_command"]
