@@ -133,9 +133,12 @@ class _PytestModule(Protocol):
 class _RuntimeModule(Protocol):
     RuntimeNode: _RuntimeNodeClass
     LLRuntime: _LLRuntimeClass
+    LLMRuntimeInitializationError: type[BaseException]
     LLMRuntimeNoHealthyNodeError: type[BaseException]
 
     def create_llm_runtime(self) -> _LLRuntimeProtocol: ...
+
+    def _probe_node(self, node: _RuntimeNodeProtocol) -> None: ...
 
     def should_invalidate_node(self, error: BaseException) -> bool: ...
 
@@ -205,7 +208,54 @@ class TestLLRuntime:
 
         assert runtime_node.provider == "openrouter"
 
-    def test_sticky_selection_with_two_healthy_nodes(self) -> None:
+    def test_runtime_prefers_primary_node_by_default(self) -> None:
+        primary = create_runtime_node("primary")
+        candidate_a = create_runtime_node("candidate-a")
+        candidate_b = create_runtime_node("candidate-b")
+
+        runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate_a, candidate_b])
+
+        assert runtime.get_active_node() is primary
+        assert [node.name for node in runtime.available_nodes] == ["primary", "candidate-a", "candidate-b"]
+
+    def test_runtime_falls_back_to_first_candidate_after_primary_failure(self) -> None:
+        primary = create_runtime_node("primary")
+        candidate_a = create_runtime_node("candidate-a")
+        candidate_b = create_runtime_node("candidate-b")
+
+        runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate_a, candidate_b])
+        changed = runtime.mark_node_failed(primary, error=StatusCodeError(503, "primary unavailable"))
+
+        assert changed is True
+        assert runtime.get_active_node() is candidate_a
+        assert [node.name for node in runtime.available_nodes] == ["candidate-a", "candidate-b"]
+
+    def test_runtime_skips_failed_candidate_and_uses_next_candidate(self) -> None:
+        primary = create_runtime_node("primary")
+        candidate_a = create_runtime_node("candidate-a")
+        candidate_b = create_runtime_node("candidate-b")
+
+        runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate_a, candidate_b])
+        runtime.mark_node_failed(primary, error=StatusCodeError(503, "primary unavailable"))
+        changed = runtime.mark_node_failed(candidate_a, error=StatusCodeError(503, "candidate-a unavailable"))
+
+        assert changed is True
+        assert runtime.get_active_node() is candidate_b
+        assert [node.name for node in runtime.available_nodes] == ["candidate-b"]
+
+    def test_runtime_keeps_active_node_when_non_active_candidate_fails(self) -> None:
+        primary = create_runtime_node("primary")
+        candidate_a = create_runtime_node("candidate-a")
+        candidate_b = create_runtime_node("candidate-b")
+
+        runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate_a, candidate_b])
+        changed = runtime.mark_node_failed(candidate_b, error=StatusCodeError(503, "candidate-b unavailable"))
+
+        assert changed is True
+        assert runtime.get_active_node() is primary
+        assert [node.name for node in runtime.available_nodes] == ["primary", "candidate-a"]
+
+    def test_runtime_prefers_first_healthy_node_during_initialization(self) -> None:
         primary = create_agent_node_config("primary", provider="openai")
         candidate_a = create_agent_node_config("candidate-a", provider="openrouter")
         candidate_b = create_agent_node_config("candidate-b", provider="openai")
@@ -215,46 +265,35 @@ class TestLLRuntime:
             if node.name == "candidate-b":
                 raise TimeoutError("probe timed out")
 
-        chosen_node = runtime_module.RuntimeNode.from_config(candidate_a)
         with (
             patch.object(runtime_module, "get_config", return_value=config),
             patch.object(runtime_module, "_probe_node", side_effect=probe_node),
-            patch("beartools.llm.runtime.random.Random.choice", autospec=True, return_value=chosen_node) as mock_choice,
         ):
             runtime = runtime_module.create_llm_runtime()
 
         assert [node.name for node in runtime.healthy_nodes] == ["primary", "candidate-a"]
-        assert runtime.get_active_node().name == "candidate-a"
-        assert runtime.get_active_node().name == "candidate-a"
+        assert runtime.get_active_node().name == "primary"
+        assert runtime.get_active_node().name == "primary"
         assert [node.name for node in runtime.available_nodes] == ["primary", "candidate-a"]
-        assert mock_choice.call_count == 1
         assert [
             node.name for node in runtime.healthy_nodes if node.fingerprint != runtime.get_active_node().fingerprint
-        ] == ["primary"]
+        ] == ["candidate-a"]
 
     def test_fail_current_call_then_reselect_future_node(self) -> None:
         primary = create_runtime_node("primary")
         candidate = create_runtime_node("candidate")
 
-        with (
-            patch(
-                "beartools.llm.runtime.random.Random.choice",
-                autospec=True,
-                side_effect=lambda _self, seq: seq[0],
-            ) as mock_choice,
-        ):
-            runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate])
-            current_call_node = runtime.get_active_node()
-            changed = runtime.mark_node_failed(
-                current_call_node,
-                error=StatusCodeError(503, "503 service unavailable"),
-            )
+        runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate])
+        current_call_node = runtime.get_active_node()
+        changed = runtime.mark_node_failed(
+            current_call_node,
+            error=StatusCodeError(503, "503 service unavailable"),
+        )
 
         assert changed is True
         assert current_call_node is primary
         assert runtime.get_active_node() is candidate
         assert [node.name for node in runtime.available_nodes] == ["candidate"]
-        assert mock_choice.call_count == 2
         assert runtime.get_active_node().name == "candidate"
 
     def test_raise_when_all_nodes_unhealthy(self) -> None:
@@ -306,7 +345,7 @@ class TestLLRuntime:
                 runtime_module.create_llm_runtime()
 
         assert "FakeAPIStatusError" in str(exc_info.value)
-        assert "service unavailable" not in str(exc_info.value)
+        assert "service unavailable" in str(exc_info.value)
 
     def test_probe_api_status_error_with_none_status_code_does_not_crash(self) -> None:
         primary = create_agent_node_config("primary")
@@ -321,8 +360,11 @@ class TestLLRuntime:
             patch.object(runtime_module, "APIStatusError", FakeAPIStatusError),
             patch.object(runtime_module, "_probe_node", side_effect=FakeAPIStatusError("upstream error")),
         ):
-            with pytest.raises(FakeAPIStatusError, match="upstream error"):
+            with pytest.raises(runtime_module.LLMRuntimeNoHealthyNodeError, match="没有可用的健康节点") as exc_info:
                 runtime_module.create_llm_runtime()
+
+        assert "FakeAPIStatusError" in str(exc_info.value)
+        assert "upstream error" in str(exc_info.value)
 
     def test_probe_local_protocol_error_is_not_wrapped_as_no_healthy_node(self) -> None:
         primary = create_agent_node_config("primary")
@@ -443,20 +485,14 @@ class TestLLRuntime:
         candidate = create_runtime_node("candidate")
         validation_error = build_validation_error()
 
-        with patch(
-            "beartools.llm.runtime.random.Random.choice",
-            autospec=True,
-            return_value=primary,
-        ) as mock_choice:
-            runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate])
-            current_node = runtime.get_active_node()
-            changed = runtime.mark_node_failed(current_node, error=validation_error)
+        runtime = runtime_module.LLRuntime(healthy_nodes=[primary, candidate])
+        current_node = runtime.get_active_node()
+        changed = runtime.mark_node_failed(current_node, error=validation_error)
 
         assert runtime_module.should_invalidate_node(validation_error) is False
         assert changed is False
         assert runtime.get_active_node() is primary
         assert [node.name for node in runtime.available_nodes] == ["primary", "candidate"]
-        mock_choice.assert_called_once()
 
 
 class TestShouldInvalidateNode:

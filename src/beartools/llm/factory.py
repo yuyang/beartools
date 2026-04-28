@@ -14,6 +14,9 @@ from typing import Protocol, cast
 from pydantic_ai.models import Model
 
 from beartools.llm.runtime import RuntimeNode, get_llm_runtime
+from beartools.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class _AsyncOpenAIFactory(Protocol):
@@ -75,6 +78,13 @@ class LLFactory:
         """创建并返回当前活动节点对应的 PydanticAI 模型。"""
 
         runtime_node = node or get_llm_runtime().get_active_node()
+        logger.info(
+            "LLM 选择节点: name=%s provider=%s base_url=%s model=%s",
+            runtime_node.name,
+            runtime_node.provider,
+            runtime_node.base_url,
+            runtime_node.model,
+        )
         pydantic_ai_models_openai = cast(
             _PydanticAIModelsOpenAIModule,
             importlib.import_module("pydantic_ai.models.openai"),

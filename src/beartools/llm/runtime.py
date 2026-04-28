@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import random
 from threading import Lock
 from typing import Final, Protocol, cast, runtime_checkable
 
@@ -64,7 +63,6 @@ class LLRuntime:
     """公开运行时类型，供工厂与后续测试共享状态。"""
 
     healthy_nodes: list[RuntimeNode]
-    _random: random.Random = field(default_factory=random.Random, repr=False)
     _active_fingerprint: str | None = field(init=False, default=None, repr=False)
     _failed_fingerprints: set[str] = field(init=False, default_factory=set, repr=False)
 
@@ -107,14 +105,13 @@ class LLRuntime:
         return None
 
     def _choose_active_fingerprint(self, exclude_fingerprint: str | None = None) -> str | None:
-        candidate_nodes = [
-            node
-            for node in self.healthy_nodes
-            if node.fingerprint not in self._failed_fingerprints and node.fingerprint != exclude_fingerprint
-        ]
-        if not candidate_nodes:
-            return None
-        return self._random.choice(candidate_nodes).fingerprint
+        for node in self.healthy_nodes:
+            if node.fingerprint in self._failed_fingerprints:
+                continue
+            if node.fingerprint == exclude_fingerprint:
+                continue
+            return node.fingerprint
+        return None
 
 
 _runtime_instance: LLRuntime | None = None

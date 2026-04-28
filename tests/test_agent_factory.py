@@ -132,6 +132,37 @@ class TestLLFactory:
             settings={"timeout": 30.0},
         )
 
+    def test_factory_logs_selected_runtime_node(self) -> None:
+        node = create_runtime_node("logged")
+        runtime = FakeRuntime(node)
+        async_openai = Mock(name="AsyncOpenAI")
+        openai_chat_model = Mock(name="OpenAIChatModel", return_value="chat-model")
+        openai_provider = Mock(name="OpenAIProvider", return_value="provider")
+        logger = Mock(name="logger")
+
+        with (
+            patch.object(factory_module, "get_llm_runtime", return_value=runtime),
+            patch.object(factory_module, "logger", logger, create=True),
+            patch.object(
+                factory_module.importlib,
+                "import_module",
+                side_effect=create_import_module_side_effect(
+                    async_openai=async_openai,
+                    openai_chat_model=openai_chat_model,
+                    openai_provider=openai_provider,
+                ),
+            ),
+        ):
+            factory_module.LLFactory().create()
+
+        logger.info.assert_called_once_with(
+            "LLM 选择节点: name=%s provider=%s base_url=%s model=%s",
+            node.name,
+            node.provider,
+            node.base_url,
+            node.model,
+        )
+
     def test_factory_does_not_trigger_second_random_selection(self) -> None:
         node = create_runtime_node("sticky", extra_headers={"X-Env": "test"})
         runtime = FakeRuntime(node)
