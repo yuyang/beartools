@@ -101,8 +101,78 @@ class TestBillCommand:
             # 我们直接测试 run 命令的行为，或者用一个小的测试
             # 这里我们用 runner.invoke(bill_app, []) 或者直接测试回调
             # 为了简化，我们先测试 run 命令，并且验证回调的逻辑
-            # 这里我们先测试 bill run 命令，然后单独测试 callback
+            # 这里我们先测试 bill run 命令，然后单独测试回调
             cli_result = runner.invoke(app, ["bill", "run", "/tmp/input.csv", "2601-"])
             assert cli_result.exit_code == 0
             assert "归一化输出" in cli_result.stdout
             assert "分析输出" in cli_result.stdout
+
+    def test_bill_run_progress_output_includes_step_and_analysis_count(self) -> None:
+        from beartools.bill.models import RunBillPipelineResult
+
+        def fake_run_bill_pipeline(input_path: str, from_value: str, *, progress_state=None):
+            assert progress_state is not None
+            progress_state.current_step = "Normalize"
+            progress_state.current_step = "Analysis"
+            progress_state.analysis_total_count = 12
+            progress_state.analysis_completed_count = 12
+            progress_state.current_step = "Finished"
+            return RunBillPipelineResult(
+                input_path=Path(input_path),
+                normalized_output_path=Path("data/bill/2601-测试.normalized.xlsx"),
+                analysis_output_path=Path("data/bill/2601-测试.analysis.xlsx"),
+                source="测试",
+                normalized_row_count=12,
+                analysis_total_rows=12,
+                analysis_failed_rows=0,
+            )
+
+        class StubReporter:
+            def __init__(self, progress_state, console):
+                self.progress_state = progress_state
+                self.console = console
+
+            def start(self) -> None:
+                self.console.print("当前步骤: Normalize")
+                self.console.print("当前步骤: Analysis")
+                self.console.file.write("\r当前步骤: Analysis，已分析: 12/12")
+                self.console.file.write("\n")
+
+            def stop(self) -> None:
+                return None
+
+        with patch("beartools.commands.bill.command.run_bill_pipeline", side_effect=fake_run_bill_pipeline):
+            with patch("beartools.commands.bill.command._BillRunProgressReporter", StubReporter):
+                cli_result = runner.invoke(app, ["bill", "run", "/tmp/input.csv", "2601-"])
+
+        assert cli_result.exit_code == 0
+        assert "当前步骤: Normalize" in cli_result.stdout
+        assert "当前步骤: Analysis" in cli_result.stdout
+        assert "当前步骤: Analysis，已分析: 12/12" in cli_result.stdout
+        assert "✅ 完整流程完成" in cli_result.stdout
+
+    def test_bill_run_error_keeps_error_message_on_new_line_after_analysis_refresh(self) -> None:
+        def failing_run_bill_pipeline(input_path: str, from_value: str, *, progress_state=None):
+            assert progress_state is not None
+            progress_state.current_step = "Analysis"
+            progress_state.analysis_total_count = 100
+            progress_state.analysis_completed_count = 3
+            raise RuntimeError("分析失败行数超过阈值")
+
+        class StubReporter:
+            def __init__(self, progress_state, console):
+                self.progress_state = progress_state
+                self.console = console
+
+            def start(self) -> None:
+                self.console.file.write("\r当前步骤: Analysis，已分析: 3/100")
+
+            def stop(self) -> None:
+                self.console.file.write("\n")
+
+        with patch("beartools.commands.bill.command.run_bill_pipeline", side_effect=failing_run_bill_pipeline):
+            with patch("beartools.commands.bill.command._BillRunProgressReporter", StubReporter):
+                cli_result = runner.invoke(app, ["bill", "run", "/tmp/input.csv", "2601-"])
+
+        assert cli_result.exit_code == 1
+        assert "当前步骤: Analysis，已分析: 3/100\n❌ 分析失败行数超过阈值" in cli_result.stdout

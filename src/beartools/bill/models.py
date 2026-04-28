@@ -154,3 +154,12 @@ class RunBillPipelineResult:
     normalized_row_count: int
     analysis_total_rows: int
     analysis_failed_rows: int
+
+
+@dataclass(slots=True)
+class BillRunProgressState:
+    """bill run 运行中的轻量进度状态。"""
+
+    current_step: str = "Pending"
+    analysis_total_count: int = 0
+    analysis_completed_count: int = 0

@@ -436,3 +436,89 @@ def test_run_bill_pipeline_analysis_fails(tmp_path: Path):
         assert not analysis_path.exists(), "analysis不应该存在"
     finally:
         os.chdir(cwd)
+
+
+def test_run_bill_pipeline_updates_progress_state(tmp_path: Path) -> None:
+    import os
+
+    from beartools.bill.models import (
+        BillAnalysisResult,
+        BillFieldDetail,
+        BillFieldMapping,
+        BillRemarkColumns,
+        BillRunProgressState,
+        BillStructureFileResult,
+    )
+    from beartools.bill.service import run_bill_pipeline
+
+    input_csv = tmp_path / "test.csv"
+    input_csv.write_text(
+        "导出信息\n交易时间,交易分类,交易对方,金额,交易状态,收/支,备注\n"
+        "2025-12-31 18:54:05,日用百货,山姆会员商店,289.80,交易成功,支出,测试备注\n",
+        encoding="utf-8",
+    )
+    structure = BillStructureFileResult(
+        file_name="test.csv",
+        source="测试账单",
+        header_row=2,
+        data_start_row=3,
+        field_mapping=BillFieldMapping(
+            transaction_time=BillFieldDetail(column_name="交易时间", confidence="high", reason=""),
+            counterparty=BillFieldDetail(column_name="交易对方", confidence="high", reason=""),
+            amount=BillFieldDetail(column_name="金额", confidence="high", reason=""),
+            status=BillFieldDetail(column_name="交易状态", confidence="high", reason=""),
+            remark_columns=BillRemarkColumns(column_names=["交易分类", "收/支", "备注"], confidence="high", reason=""),
+        ),
+    )
+    progress_state = BillRunProgressState()
+
+    cwd = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        result = run_bill_pipeline(
+            input_csv,
+            "2601-",
+            structure_resolver=lambda _: structure,
+            row_analyzer=lambda *args: BillAnalysisResult(purpose="测试用途", owner="vv"),
+            progress_state=progress_state,
+        )
+    finally:
+        os.chdir(cwd)
+
+    assert result.analysis_total_rows == 1
+    assert progress_state.current_step == "Finished"
+    assert progress_state.analysis_completed_count == 1
+
+
+def test_analyze_bill_file_counts_completed_rows_even_when_row_falls_back_to_unknow(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+
+    from beartools.bill.models import BillRunProgressState
+    from beartools.bill.service import analyze_bill_file
+
+    input_path = tmp_path / "test.xlsx"
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    assert worksheet is not None
+    worksheet.append(["原始来源", "交易时间", "交易对方", "金额", "交易状态", "注意", "备注"])
+    worksheet.append(["2601-支付宝", "2025-12-31 18:54:05", "山姆会员商店", "289.80", "交易成功", "", "日用百货"])
+    worksheet.append(["2601-支付宝", "2025-12-31 18:55:05", "盒马", "19.80", "交易成功", "", "零食"])
+    workbook.save(input_path)
+
+    progress_state = BillRunProgressState()
+
+    def mixed_row_analyzer(counterparty: str, remark: str, status: str, amount: str):
+        if counterparty == "盒马":
+            raise RuntimeError("分析失败")
+        from beartools.bill.models import BillAnalysisResult
+
+        return BillAnalysisResult(purpose="食物", owner="yy")
+
+    result = analyze_bill_file(input_path, row_analyzer=mixed_row_analyzer, progress_state=progress_state)
+
+    assert result.total_rows == 2
+    assert result.failed_rows == 1
+    assert progress_state.current_step == "Analysis"
+    assert progress_state.analysis_total_count == 2
+    assert progress_state.analysis_completed_count == 2

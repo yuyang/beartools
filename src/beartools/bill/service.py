@@ -16,6 +16,7 @@ from .models import (
     AnalyzeBillFileResult,
     BillAnalysisResult,
     BillFieldMapping,
+    BillRunProgressState,
     BillStructureFileResult,
     NormalizeBillFileResult,
     NormalizedBillRow,
@@ -280,6 +281,7 @@ def analyze_bill_file(
     input_path: str | Path,
     *,
     row_analyzer: Callable[[str, str, str, str], BillAnalysisResult] = analyze_bill_row,
+    progress_state: BillRunProgressState | None = None,
 ) -> AnalyzeBillFileResult:
     """分析归一化后的账单文件，每行分析得到用途和归属人，追加列输出到新文件。
 
@@ -287,6 +289,7 @@ def analyze_bill_file(
         input_path: 归一化结果的xlsx文件路径
         row_analyzer: 自定义行分析函数，接收(交易对方, 备注, 交易状态, 金额)，返回分析结果，
             默认使用analyze_bill_row进行LLM分析
+        progress_state: 进度状态对象，用于跟踪处理进度
 
     Returns:
         分析结果对象
@@ -296,6 +299,10 @@ def analyze_bill_file(
         RuntimeError: 如果表头不匹配，或失败行数超过阈值
     """
     input_path = Path(input_path)
+
+    # 更新进度状态
+    if progress_state is not None:
+        progress_state.current_step = "Analysis"
 
     # 1. 验证输入格式
     if input_path.suffix.lower() != ".xlsx":
@@ -311,8 +318,13 @@ def analyze_bill_file(
     column_index_map = {header: idx for idx, header in enumerate(headers)}
     processed_rows = _prepare_output_headers(headers)
 
+    if progress_state is not None:
+        progress_state.analysis_total_count = max(ws.max_row - 1, 0)
+
     # 3. 处理所有数据行
-    total_rows, failed_count = _process_data_rows(ws, column_index_map, processed_rows, row_analyzer, input_path)
+    total_rows, failed_count = _process_data_rows(
+        ws, column_index_map, processed_rows, row_analyzer, input_path, progress_state
+    )
 
     # 4. 写入输出文件
     output_path = _write_analysis_output(input_path, processed_rows)
@@ -358,6 +370,7 @@ def _process_data_rows(
     processed_rows: list[list[str | None]],
     row_analyzer: Callable[[str, str, str, str], BillAnalysisResult],
     input_path: Path,
+    progress_state: BillRunProgressState | None = None,
 ) -> tuple[int, int]:
     """处理所有数据行，执行分析并收集结果。"""
     failed_count = 0
@@ -390,6 +403,10 @@ def _process_data_rows(
         original_values.append(purpose)
         original_values.append(owner)
         processed_rows.append(original_values)
+
+        # 更新已完成行数计数
+        if progress_state is not None:
+            progress_state.analysis_completed_count += 1
 
     return total_rows, failed_count
 
@@ -446,21 +463,34 @@ def run_bill_pipeline(
     *,
     structure_resolver: Callable[[Path], BillStructureFileResult] | None = None,
     row_analyzer: Callable[[str, str, str, str], BillAnalysisResult] = analyze_bill_row,
+    progress_state: BillRunProgressState | None = None,
 ) -> RunBillPipelineResult:
     """串联 normalize 与 analysis，完成从原始账单到最终分析的完整流程。"""
     input_path_obj = Path(input_path)
+
+    # 初始化进度状态
+    if progress_state is not None:
+        progress_state.current_step = "Normalize"
+        progress_state.analysis_total_count = 0
+        progress_state.analysis_completed_count = 0
 
     # 第一步 normalize
     normalize_result = normalize_bill_file(input_path_obj, from_value, structure_resolver=structure_resolver)
 
     # 第二步 analysis，确保失败时清理分析输出
     try:
-        analyze_result = analyze_bill_file(normalize_result.output_path, row_analyzer=row_analyzer)
+        analyze_result = analyze_bill_file(
+            normalize_result.output_path, row_analyzer=row_analyzer, progress_state=progress_state
+        )
     except Exception:
         candidate = normalize_result.output_path.with_suffix("").with_suffix(".analysis.xlsx")
         if candidate.exists():
             candidate.unlink()
         raise
+
+    # 标记完成
+    if progress_state is not None:
+        progress_state.current_step = "Finished"
 
     return RunBillPipelineResult(
         input_path=input_path_obj,

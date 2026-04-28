@@ -2,14 +2,71 @@
 
 from __future__ import annotations
 
+import threading
 from typing import cast
 
 from rich.console import Console
 import typer
 
-from beartools.bill import analyze_bill_file, normalize_bill_file, run_bill_pipeline
+from beartools.bill import BillRunProgressState, analyze_bill_file, normalize_bill_file, run_bill_pipeline
 
 console = Console()
+
+
+class _BillRunProgressReporter:
+    """bill run 命令的终端进度播报器。"""
+
+    def __init__(
+        self,
+        progress_state: BillRunProgressState,
+        console_instance: Console,
+        interval_seconds: float = 3.0,
+    ) -> None:
+        self._progress_state = progress_state
+        self._console = console_instance
+        self._interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._last_step = ""
+        self._analysis_line_active = False
+
+    def start(self) -> None:
+        """启动后台播报线程。"""
+        self._thread.start()
+
+    def stop(self) -> None:
+        """停止后台播报线程，并清理 analysis 刷新行。"""
+        self._stop_event.set()
+        self._thread.join(timeout=self._interval_seconds + 0.5)
+        if self._analysis_line_active:
+            self._console.file.write("\n")
+            self._console.file.flush()
+            self._analysis_line_active = False
+
+    def _run_loop(self) -> None:
+        while not self._stop_event.wait(self._interval_seconds):
+            self._render_once()
+
+    def _render_once(self) -> None:
+        step = self._progress_state.current_step
+        if not step or step == "Pending":
+            return
+
+        if step != self._last_step:
+            if self._analysis_line_active:
+                self._console.file.write("\n")
+                self._console.file.flush()
+                self._analysis_line_active = False
+            self._console.print(f"当前步骤: {step}")
+            self._last_step = step
+
+        if step == "Analysis":
+            self._console.file.write(
+                f"\r当前步骤: Analysis，已分析: {self._progress_state.analysis_completed_count}/{self._progress_state.analysis_total_count}"
+            )
+            self._console.file.flush()
+            self._analysis_line_active = True
+
 
 # 标准 Typer app，包含所有子命令
 app = typer.Typer(help="账单处理相关操作，直接输入文件路径默认执行完整流程")
@@ -81,11 +138,21 @@ def run_bill(
     if from_value is None:
         from_value = cast(str, typer.prompt("请输入from值", default="yy"))
 
+    progress_state = BillRunProgressState()
+    reporter = _BillRunProgressReporter(progress_state, console)
+    reporter_stopped = False
+
     try:
-        result = run_bill_pipeline(input_path, from_value)
+        reporter.start()
+        result = run_bill_pipeline(input_path, from_value, progress_state=progress_state)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        reporter.stop()
+        reporter_stopped = True
         console.print(f"❌ {exc}", style="red")
         raise typer.Exit(1) from exc
+    finally:
+        if not reporter_stopped:
+            reporter.stop()
 
     console.print(f"归一化输出: {result.normalized_output_path}")
     console.print(f"分析输出: {result.analysis_output_path}")
