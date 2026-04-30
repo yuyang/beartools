@@ -52,6 +52,7 @@ def test_status_mapping_accepts_ignore_status(tmp_path: Path) -> None:
         """
 exact:
   已存入零钱: IGNORE
+  已到账: IGNORE
 patterns:
   - pattern: "^已全额退款$"
     normalized_status: IGNORE
@@ -62,6 +63,7 @@ patterns:
     mapping = load_status_mapping(config_path)
 
     assert resolve_normalized_status("已存入零钱", mapping) == "IGNORE"
+    assert resolve_normalized_status("已到账", mapping) == "IGNORE"
     assert resolve_normalized_status("已全额退款", mapping) == "IGNORE"
 
 
