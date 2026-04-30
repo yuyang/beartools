@@ -168,6 +168,7 @@ def _normalize_rows(
         )
         if resolved_row is None:
             ignored_lines.append(original_line_number)
+            processed_count += 1
             ignore_count += 1
             continue
         normalized_status, adjusted_amount = resolved_row

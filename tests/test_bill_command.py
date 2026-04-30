@@ -274,7 +274,7 @@ class TestBillCommand:
                     "P",
                     (),
                     {
-                        "processed_count": 100,
+                        "processed_count": 110,
                         "normal_success_count": 80,
                         "refund_count": 15,
                         "part_refund_count": 5,
@@ -288,7 +288,7 @@ class TestBillCommand:
                     "P",
                     (),
                     {
-                        "processed_count": 105,
+                        "processed_count": 117,
                         "normal_success_count": 82,
                         "refund_count": 17,
                         "part_refund_count": 6,
@@ -303,7 +303,7 @@ class TestBillCommand:
             cli_result = runner.invoke(app, ["bill", "normalize", "/tmp/wechat.csv", "2601-"])
 
         assert cli_result.exit_code == 0
-        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5，IGNORE=10" in cli_result.stdout
+        assert "Normalize 进度: 110，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5，IGNORE=10" in cli_result.stdout
         assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6，IGNORE=12" in cli_result.stdout
 
     def test_run_prints_normalize_progress_and_final_status_summary(self) -> None:
@@ -326,7 +326,7 @@ class TestBillCommand:
                     "P",
                     (),
                     {
-                        "processed_count": 100,
+                        "processed_count": 110,
                         "normal_success_count": 80,
                         "refund_count": 15,
                         "part_refund_count": 5,
@@ -340,7 +340,7 @@ class TestBillCommand:
                     "P",
                     (),
                     {
-                        "processed_count": 105,
+                        "processed_count": 117,
                         "normal_success_count": 82,
                         "refund_count": 17,
                         "part_refund_count": 6,
@@ -368,7 +368,7 @@ class TestBillCommand:
             cli_result = runner.invoke(app, ["bill", "run", "/tmp/input.csv", "2601-"])
 
         assert cli_result.exit_code == 0
-        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5，IGNORE=10" in cli_result.stdout
+        assert "Normalize 进度: 110，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5，IGNORE=10" in cli_result.stdout
         assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6，IGNORE=12" in cli_result.stdout
 
     def test_normalize_does_not_warn_when_ignored_lines_explain_row_difference(self) -> None:
