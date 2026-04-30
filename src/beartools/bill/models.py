@@ -8,7 +8,7 @@ from typing import Literal
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 BillSource = Literal["支付宝", "微信", "京东", "未知"]
-BillNormalizedStatus = Literal["NORMAL_SUCCESS", "REFUND", "PART_REFUND"]
+BillNormalizedStatus = Literal["NORMAL_SUCCESS", "REFUND", "PART_REFUND", "IGNORE"]
 
 
 @dataclass(slots=True)

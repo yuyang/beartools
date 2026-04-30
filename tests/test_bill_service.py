@@ -216,7 +216,7 @@ def test_normalize_bill_file_uses_part_refund_amount_resolver(tmp_path: Path) ->
 
     wb = load_workbook(tmp_path / result.output_path)
     ws = wb.active
-    assert ws["D2"].value == "-1"
+    assert ws["D2"].value == "60.6"
     assert ws["E2"].value == "已退款￥1.00"
 
 
@@ -271,6 +271,53 @@ def test_normalize_bill_file_reports_progress_every_100_rows_and_final(tmp_path:
 
     assert snapshots[0] == (100, 100, 0, 0, False)
     assert snapshots[-1] == (105, 100, 5, 0, True)
+
+
+def test_normalize_bill_file_ignores_rows_mapped_to_ignore_status(tmp_path: Path) -> None:
+    from openpyxl import load_workbook
+
+    from beartools.bill.models import BillFieldDetail, BillFieldMapping, BillRemarkColumns, BillStructureFileResult
+    from beartools.bill.service import normalize_bill_file
+
+    input_path = tmp_path / "wechat.csv"
+    input_path.write_text(
+        "标题\n交易时间,交易对方,金额,当前状态,备注\n"
+        "2026-01-01 10:00:00,零钱,5.00,已存入零钱,转入零钱\n"
+        "2026-01-01 10:05:00,商家A,10.00,支付成功,正常保留\n"
+        "2026-01-01 10:10:00,商家B,20.00,已全额退款,整单退款\n",
+        encoding="utf-8",
+    )
+    structure = BillStructureFileResult(
+        file_name=input_path.name,
+        source="微信",
+        header_row=2,
+        data_start_row=3,
+        field_mapping=BillFieldMapping(
+            transaction_time=BillFieldDetail(column_name="交易时间", confidence="high", reason=""),
+            counterparty=BillFieldDetail(column_name="交易对方", confidence="high", reason=""),
+            amount=BillFieldDetail(column_name="金额", confidence="high", reason=""),
+            status=BillFieldDetail(column_name="当前状态", confidence="high", reason=""),
+            remark_columns=BillRemarkColumns(column_names=["备注"], confidence="high", reason=""),
+        ),
+        sample_rows=[],
+        notes=[],
+    )
+
+    cwd = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        result = normalize_bill_file(input_path, "2601-", structure_resolver=lambda _: structure)
+    finally:
+        os.chdir(cwd)
+
+    assert result.row_count == 1
+    assert result.ignored_lines == [3, 5]
+
+    wb = load_workbook(tmp_path / result.output_path)
+    ws = wb.active
+    assert ws.max_row == 2
+    assert ws["C2"].value == "商家A"
+    assert ws["E2"].value == "支付成功"
 
 
 def test_preview_reader_handles_gb18030_csv(tmp_path: Path) -> None:

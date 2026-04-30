@@ -141,20 +141,28 @@ def _normalize_rows(
 
     for index, row in enumerate(data_rows):
         original_line_number = structure.data_start_row + index
-        if _is_empty_row(row):
-            ignored_lines.append(original_line_number)
+        skip_action = _check_skip_action(
+            row=row,
+            index=index,
+            data_rows=data_rows,
+            original_line_number=original_line_number,
+            structure=structure,
+            column_map=column_map,
+            field_mapping=field_mapping,
+            ignored_lines=ignored_lines,
+        )
+        if skip_action == "continue":
             continue
-        if _is_summary_row(row, column_map, field_mapping):
-            ignored_lines.append(original_line_number)
-            # 汇总行之后的所有行都忽略
-            for remaining_index in range(index + 1, len(data_rows)):
-                ignored_lines.append(structure.data_start_row + remaining_index)
+        if skip_action == "break":
             break
         raw_amount = _normalize_amount(_get_column_value(row, column_map, field_mapping.amount.column_name))
         status = _get_column_value(row, column_map, field_mapping.status.column_name)
         normalized_status = resolve_normalized_status(status, status_mapping)
         if normalized_status is None:
             raise RuntimeError(f"未识别的交易状态: {status}")
+        if normalized_status == "IGNORE":
+            ignored_lines.append(original_line_number)
+            continue
         adjusted_amount = raw_amount
 
         # 尝试转换为数字进行正负调整，转换失败保持原样
@@ -211,6 +219,29 @@ def _normalize_rows(
             is_final=True,
         )
     return normalized_rows, ignored_lines, total_raw_data_rows, row_numbers
+
+
+def _check_skip_action(
+    *,
+    row: list[str],
+    index: int,
+    data_rows: list[list[str]],
+    original_line_number: int,
+    structure: BillStructureFileResult,
+    column_map: dict[str, int],
+    field_mapping: BillFieldMapping,
+    ignored_lines: list[int],
+) -> str | None:
+    if _is_empty_row(row):
+        ignored_lines.append(original_line_number)
+        return "continue"
+    if not _is_summary_row(row, column_map, field_mapping):
+        return None
+    ignored_lines.append(original_line_number)
+    # 汇总行之后的所有行都忽略
+    for remaining_index in range(index + 1, len(data_rows)):
+        ignored_lines.append(structure.data_start_row + remaining_index)
+    return "break"
 
 
 def _build_normalized_row(
@@ -359,7 +390,9 @@ def _normalize_row_amount(
         source=source,
         transaction_time=transaction_time,
     )
-    return f"{-abs(float(part_refund_result.refund_amount)):g}"
+    refund_amount = abs(float(part_refund_result.refund_amount))
+    net_amount = abs(amount_num) - refund_amount
+    return f"{net_amount:g}"
 
 
 def _apply_refund_offset(

@@ -81,6 +81,6 @@ def append_exact_mapping(config_path: Path, raw_status: str, normalized_status: 
 
 
 def _normalize_status(value: str) -> BillNormalizedStatus:
-    if value not in {"NORMAL_SUCCESS", "REFUND", "PART_REFUND"}:
+    if value not in {"NORMAL_SUCCESS", "REFUND", "PART_REFUND", "IGNORE"}:
         raise RuntimeError(f"非法标准状态: {value}")
     return cast(BillNormalizedStatus, value)
