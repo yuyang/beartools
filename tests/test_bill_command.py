@@ -278,6 +278,7 @@ class TestBillCommand:
                         "normal_success_count": 80,
                         "refund_count": 15,
                         "part_refund_count": 5,
+                        "ignore_count": 10,
                         "is_final": False,
                     },
                 )()
@@ -291,6 +292,7 @@ class TestBillCommand:
                         "normal_success_count": 82,
                         "refund_count": 17,
                         "part_refund_count": 6,
+                        "ignore_count": 12,
                         "is_final": True,
                     },
                 )()
@@ -301,8 +303,8 @@ class TestBillCommand:
             cli_result = runner.invoke(app, ["bill", "normalize", "/tmp/wechat.csv", "2601-"])
 
         assert cli_result.exit_code == 0
-        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5" in cli_result.stdout
-        assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6" in cli_result.stdout
+        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5，IGNORE=10" in cli_result.stdout
+        assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6，IGNORE=12" in cli_result.stdout
 
     def test_run_prints_normalize_progress_and_final_status_summary(self) -> None:
         from beartools.bill.models import RunBillPipelineResult
@@ -328,6 +330,7 @@ class TestBillCommand:
                         "normal_success_count": 80,
                         "refund_count": 15,
                         "part_refund_count": 5,
+                        "ignore_count": 10,
                         "is_final": False,
                     },
                 )()
@@ -341,6 +344,7 @@ class TestBillCommand:
                         "normal_success_count": 82,
                         "refund_count": 17,
                         "part_refund_count": 6,
+                        "ignore_count": 12,
                         "is_final": True,
                     },
                 )()
@@ -364,5 +368,24 @@ class TestBillCommand:
             cli_result = runner.invoke(app, ["bill", "run", "/tmp/input.csv", "2601-"])
 
         assert cli_result.exit_code == 0
-        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5" in cli_result.stdout
-        assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6" in cli_result.stdout
+        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5，IGNORE=10" in cli_result.stdout
+        assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6，IGNORE=12" in cli_result.stdout
+
+    def test_normalize_does_not_warn_when_ignored_lines_explain_row_difference(self) -> None:
+        result = NormalizeBillFileResult(
+            input_path=Path("/tmp/wechat.xlsx"),
+            output_path=Path("data/bill/yy微信.xlsx"),
+            source="微信",
+            row_count=152,
+            total_raw_data_rows=159,
+            output_row_count=152,
+            ignored_lines=[23, 24, 73, 74, 120, 137, 166],
+        )
+
+        with patch("beartools.commands.bill.command.normalize_bill_file", return_value=result):
+            cli_result = runner.invoke(app, ["bill", "normalize", "/tmp/wechat.xlsx", "yy"])
+
+        assert cli_result.exit_code == 0
+        assert "忽略的行号: 23, 24, 73, 74, 120, 137, 166" in cli_result.stdout
+        assert "警告：读到的有效行数和输出行数不一致" not in cli_result.stdout
+        assert "✅ 归一化完成" in cli_result.stdout

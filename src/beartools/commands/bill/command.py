@@ -20,7 +20,7 @@ from beartools.bill import (
 from beartools.bill.status_mapping import DEFAULT_STATUS_MAPPING_PATH, append_exact_mapping
 
 console = Console()
-NormalizedStatusChoice = Literal["NORMAL_SUCCESS", "REFUND", "PART_REFUND"]
+NormalizedStatusChoice = Literal["NORMAL_SUCCESS", "REFUND", "PART_REFUND", "IGNORE"]
 
 
 def _render_normalize_progress(progress: NormalizeProgressSnapshot) -> None:
@@ -29,14 +29,16 @@ def _render_normalize_progress(progress: NormalizeProgressSnapshot) -> None:
             "Normalize 状态统计: "
             f"NORMAL_SUCCESS={progress.normal_success_count}，"
             f"REFUND={progress.refund_count}，"
-            f"PART_REFUND={progress.part_refund_count}"
+            f"PART_REFUND={progress.part_refund_count}，"
+            f"IGNORE={progress.ignore_count}"
         )
         return
     console.print(
         f"Normalize 进度: {progress.processed_count}，"
         f"NORMAL_SUCCESS={progress.normal_success_count}，"
         f"REFUND={progress.refund_count}，"
-        f"PART_REFUND={progress.part_refund_count}"
+        f"PART_REFUND={progress.part_refund_count}，"
+        f"IGNORE={progress.ignore_count}"
     )
 
 
@@ -47,15 +49,15 @@ def _confirm_unknown_statuses(statuses: list[str]) -> None:
             cast(
                 str,
                 typer.prompt(
-                    f"请确认状态 [{status}] 属于 NORMAL_SUCCESS / REFUND / PART_REFUND",
+                    f"请确认状态 [{status}] 属于 NORMAL_SUCCESS / REFUND / PART_REFUND / IGNORE",
                     default="NORMAL_SUCCESS",
                 ),
             )
             .strip()
             .upper()
         )
-        if normalized_status not in {"NORMAL_SUCCESS", "REFUND", "PART_REFUND"}:
-            raise typer.BadParameter("状态只能是 NORMAL_SUCCESS / REFUND / PART_REFUND")
+        if normalized_status not in {"NORMAL_SUCCESS", "REFUND", "PART_REFUND", "IGNORE"}:
+            raise typer.BadParameter("状态只能是 NORMAL_SUCCESS / REFUND / PART_REFUND / IGNORE")
         append_exact_mapping(Path(DEFAULT_STATUS_MAPPING_PATH), status, cast(NormalizedStatusChoice, normalized_status))
         console.print(f"已写入状态映射: {status} -> {normalized_status}")
 
@@ -153,7 +155,7 @@ def normalize_bill(
     else:
         console.print("忽略的行号: 无")
 
-    if result.total_raw_data_rows != result.output_row_count:
+    if result.total_raw_data_rows != result.output_row_count + len(result.ignored_lines):
         console.print("\n❌ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", style="bold red")
         console.print("❌ 警告：读到的有效行数和输出行数不一致！请检查忽略的行号是否合理", style="red")
         console.print("❌ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n", style="bold red")

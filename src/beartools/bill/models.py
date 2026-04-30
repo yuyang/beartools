@@ -125,6 +125,7 @@ class NormalizeProgressSnapshot:
     normal_success_count: int
     refund_count: int
     part_refund_count: int
+    ignore_count: int
     is_final: bool = False
 
 

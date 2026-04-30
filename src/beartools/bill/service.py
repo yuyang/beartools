@@ -138,6 +138,7 @@ def _normalize_rows(
     normal_success_count = 0
     refund_count = 0
     part_refund_count = 0
+    ignore_count = 0
 
     for index, row in enumerate(data_rows):
         original_line_number = structure.data_start_row + index
@@ -162,6 +163,7 @@ def _normalize_rows(
             raise RuntimeError(f"未识别的交易状态: {status}")
         if normalized_status == "IGNORE":
             ignored_lines.append(original_line_number)
+            ignore_count += 1
             continue
         adjusted_amount = raw_amount
 
@@ -189,6 +191,7 @@ def _normalize_rows(
             from_value=from_value,
             source=structure.source,
             amount=adjusted_amount,
+            raw_amount=raw_amount,
             status=status,
             normalized_status=normalized_status,
         )
@@ -207,6 +210,7 @@ def _normalize_rows(
             normal_success_count=normal_success_count,
             refund_count=refund_count,
             part_refund_count=part_refund_count,
+            ignore_count=ignore_count,
             is_final=False,
         )
     if progress_callback is not None:
@@ -216,6 +220,7 @@ def _normalize_rows(
             normal_success_count=normal_success_count,
             refund_count=refund_count,
             part_refund_count=part_refund_count,
+            ignore_count=ignore_count,
             is_final=True,
         )
     return normalized_rows, ignored_lines, total_raw_data_rows, row_numbers
@@ -252,9 +257,13 @@ def _build_normalized_row(
     from_value: str,
     source: str,
     amount: str,
+    raw_amount: str,
     status: str,
     normalized_status: BillNormalizedStatus,
 ) -> NormalizedBillRow:
+    remark = _build_remark(row, column_map, field_mapping.remark_columns.column_names)
+    if normalized_status == "PART_REFUND":
+        remark = _append_original_amount_remark(remark, raw_amount)
     return NormalizedBillRow(
         from_value=from_value,
         source=source,
@@ -263,8 +272,17 @@ def _build_normalized_row(
         amount=amount,
         status=status,
         normalized_status=normalized_status,
-        remark=_build_remark(row, column_map, field_mapping.remark_columns.column_names),
+        remark=remark,
     )
+
+
+def _append_original_amount_remark(remark: str, raw_amount: str) -> str:
+    if not raw_amount:
+        return remark
+    original_amount_part = f"原始金额={raw_amount}"
+    if not remark:
+        return original_amount_part
+    return f"{remark}; {original_amount_part}"
 
 
 def _update_normalize_progress_counts(
@@ -292,6 +310,7 @@ def _emit_normalize_progress(
     normal_success_count: int,
     refund_count: int,
     part_refund_count: int,
+    ignore_count: int,
     is_final: bool,
 ) -> None:
     if progress_callback is None:
@@ -304,6 +323,7 @@ def _emit_normalize_progress(
             normal_success_count=normal_success_count,
             refund_count=refund_count,
             part_refund_count=part_refund_count,
+            ignore_count=ignore_count,
             is_final=is_final,
         )
     )

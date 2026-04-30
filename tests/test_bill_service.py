@@ -218,6 +218,7 @@ def test_normalize_bill_file_uses_part_refund_amount_resolver(tmp_path: Path) ->
     ws = wb.active
     assert ws["D2"].value == "60.6"
     assert ws["E2"].value == "已退款￥1.00"
+    assert ws["G2"].value == "备注=状态显示已退款￥1.00; 原始金额=61.60"
 
 
 def test_normalize_bill_file_reports_progress_every_100_rows_and_final(tmp_path: Path) -> None:
