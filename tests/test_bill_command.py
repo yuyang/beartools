@@ -25,7 +25,9 @@ class TestBillCommand:
         with patch("beartools.commands.bill.command.normalize_bill_file", return_value=result) as mock_normalize:
             cli_result = runner.invoke(app, ["bill", "normalize", "/tmp/wechat.xlsx", "2601-"])
         assert cli_result.exit_code == 0
-        mock_normalize.assert_called_once_with("/tmp/wechat.xlsx", "2601-")
+        mock_normalize.assert_called_once()
+        assert mock_normalize.call_args.args == ("/tmp/wechat.xlsx", "2601-")
+        assert "progress_callback" in mock_normalize.call_args.kwargs
         assert "输出文件: data/bill/2601-微信.xlsx" in cli_result.stdout
         assert "来源: 微信" in cli_result.stdout
         assert "行数: 159" in cli_result.stdout
@@ -110,7 +112,9 @@ class TestBillCommand:
     def test_bill_run_progress_output_includes_step_and_analysis_count(self) -> None:
         from beartools.bill.models import RunBillPipelineResult
 
-        def fake_run_bill_pipeline(input_path: str, from_value: str, *, progress_state=None):
+        def fake_run_bill_pipeline(
+            input_path: str, from_value: str, *, progress_state=None, normalize_progress_callback=None
+        ):
             assert progress_state is not None
             progress_state.current_step = "Normalize"
             progress_state.current_step = "Analysis"
@@ -152,7 +156,9 @@ class TestBillCommand:
         assert "✅ 完整流程完成" in cli_result.stdout
 
     def test_bill_run_error_keeps_error_message_on_new_line_after_analysis_refresh(self) -> None:
-        def failing_run_bill_pipeline(input_path: str, from_value: str, *, progress_state=None):
+        def failing_run_bill_pipeline(
+            input_path: str, from_value: str, *, progress_state=None, normalize_progress_callback=None
+        ):
             assert progress_state is not None
             progress_state.current_step = "Analysis"
             progress_state.analysis_total_count = 100
@@ -176,3 +182,187 @@ class TestBillCommand:
 
         assert cli_result.exit_code == 1
         assert "当前步骤: Analysis，已分析: 3/100\n❌ 分析失败行数超过阈值" in cli_result.stdout
+
+    def test_normalize_prompts_unknown_status_and_retries(self) -> None:
+        from beartools.bill.models import NormalizeBillFileResult, UnknownBillStatusesError
+
+        result = NormalizeBillFileResult(
+            input_path=Path("/tmp/alipay.csv"),
+            output_path=Path("data/bill/2601-支付宝.xlsx"),
+            source="支付宝",
+            row_count=1,
+            total_raw_data_rows=1,
+            output_row_count=1,
+        )
+        calls: list[str] = []
+
+        def fake_normalize(*_args, **_kwargs):
+            if not calls:
+                calls.append("first")
+                raise UnknownBillStatusesError(["等待确认收货"])
+            return result
+
+        with (
+            patch("beartools.commands.bill.command.normalize_bill_file", side_effect=fake_normalize),
+            patch("beartools.commands.bill.command.append_exact_mapping") as mock_append,
+            patch("beartools.commands.bill.command.typer.prompt", return_value="NORMAL_SUCCESS"),
+        ):
+            cli_result = runner.invoke(app, ["bill", "normalize", "/tmp/alipay.csv", "2601-"])
+
+        assert cli_result.exit_code == 0
+        mock_append.assert_called_once()
+        assert "发现未识别的交易状态: 等待确认收货" in cli_result.stdout
+
+    def test_run_prompts_unknown_status_and_retries_pipeline(self) -> None:
+        from beartools.bill.models import RunBillPipelineResult, UnknownBillStatusesError
+
+        result = RunBillPipelineResult(
+            input_path=Path("/tmp/input.csv"),
+            normalized_output_path=Path("data/bill/2601-测试.xlsx"),
+            analysis_output_path=Path("data/bill/2601-测试.analysis.xlsx"),
+            source="测试",
+            normalized_row_count=1,
+            analysis_total_rows=1,
+            analysis_failed_rows=0,
+        )
+        calls: list[str] = []
+
+        def fake_run(*_args, **_kwargs):
+            if not calls:
+                calls.append("first")
+                raise UnknownBillStatusesError(["等待确认收货"])
+            return result
+
+        class StubReporter:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+        with (
+            patch("beartools.commands.bill.command.run_bill_pipeline", side_effect=fake_run),
+            patch("beartools.commands.bill.command._BillRunProgressReporter", StubReporter),
+            patch("beartools.commands.bill.command.append_exact_mapping") as mock_append,
+            patch("beartools.commands.bill.command.typer.prompt", return_value="REFUND"),
+        ):
+            cli_result = runner.invoke(app, ["bill", "run", "/tmp/input.csv", "2601-"])
+
+        assert cli_result.exit_code == 0
+        mock_append.assert_called_once()
+        assert "✅ 完整流程完成" in cli_result.stdout
+
+    def test_normalize_prints_progress_and_final_status_summary(self) -> None:
+        from beartools.bill.models import NormalizeBillFileResult
+
+        result = NormalizeBillFileResult(
+            input_path=Path("/tmp/wechat.csv"),
+            output_path=Path("data/bill/2601-微信.xlsx"),
+            source="微信",
+            row_count=105,
+            total_raw_data_rows=105,
+            output_row_count=105,
+        )
+
+        def fake_normalize(*_args, progress_callback=None, **_kwargs):
+            assert progress_callback is not None
+            progress_callback(
+                type(
+                    "P",
+                    (),
+                    {
+                        "processed_count": 100,
+                        "normal_success_count": 80,
+                        "refund_count": 15,
+                        "part_refund_count": 5,
+                        "is_final": False,
+                    },
+                )()
+            )
+            progress_callback(
+                type(
+                    "P",
+                    (),
+                    {
+                        "processed_count": 105,
+                        "normal_success_count": 82,
+                        "refund_count": 17,
+                        "part_refund_count": 6,
+                        "is_final": True,
+                    },
+                )()
+            )
+            return result
+
+        with patch("beartools.commands.bill.command.normalize_bill_file", side_effect=fake_normalize):
+            cli_result = runner.invoke(app, ["bill", "normalize", "/tmp/wechat.csv", "2601-"])
+
+        assert cli_result.exit_code == 0
+        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5" in cli_result.stdout
+        assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6" in cli_result.stdout
+
+    def test_run_prints_normalize_progress_and_final_status_summary(self) -> None:
+        from beartools.bill.models import RunBillPipelineResult
+
+        result = RunBillPipelineResult(
+            input_path=Path("/tmp/input.csv"),
+            normalized_output_path=Path("data/bill/2601-测试.xlsx"),
+            analysis_output_path=Path("data/bill/2601-测试.analysis.xlsx"),
+            source="测试",
+            normalized_row_count=105,
+            analysis_total_rows=105,
+            analysis_failed_rows=0,
+        )
+
+        def fake_run(*_args, normalize_progress_callback=None, **_kwargs):
+            assert normalize_progress_callback is not None
+            normalize_progress_callback(
+                type(
+                    "P",
+                    (),
+                    {
+                        "processed_count": 100,
+                        "normal_success_count": 80,
+                        "refund_count": 15,
+                        "part_refund_count": 5,
+                        "is_final": False,
+                    },
+                )()
+            )
+            normalize_progress_callback(
+                type(
+                    "P",
+                    (),
+                    {
+                        "processed_count": 105,
+                        "normal_success_count": 82,
+                        "refund_count": 17,
+                        "part_refund_count": 6,
+                        "is_final": True,
+                    },
+                )()
+            )
+            return result
+
+        class StubReporter:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+        with (
+            patch("beartools.commands.bill.command.run_bill_pipeline", side_effect=fake_run),
+            patch("beartools.commands.bill.command._BillRunProgressReporter", StubReporter),
+        ):
+            cli_result = runner.invoke(app, ["bill", "run", "/tmp/input.csv", "2601-"])
+
+        assert cli_result.exit_code == 0
+        assert "Normalize 进度: 100，NORMAL_SUCCESS=80，REFUND=15，PART_REFUND=5" in cli_result.stdout
+        assert "Normalize 状态统计: NORMAL_SUCCESS=82，REFUND=17，PART_REFUND=6" in cli_result.stdout

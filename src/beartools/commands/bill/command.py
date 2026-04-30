@@ -2,15 +2,62 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import threading
-from typing import cast
+from typing import Literal, cast
 
 from rich.console import Console
 import typer
 
-from beartools.bill import BillRunProgressState, analyze_bill_file, normalize_bill_file, run_bill_pipeline
+from beartools.bill import (
+    BillRunProgressState,
+    NormalizeProgressSnapshot,
+    UnknownBillStatusesError,
+    analyze_bill_file,
+    normalize_bill_file,
+    run_bill_pipeline,
+)
+from beartools.bill.status_mapping import DEFAULT_STATUS_MAPPING_PATH, append_exact_mapping
 
 console = Console()
+NormalizedStatusChoice = Literal["NORMAL_SUCCESS", "REFUND", "PART_REFUND"]
+
+
+def _render_normalize_progress(progress: NormalizeProgressSnapshot) -> None:
+    if progress.is_final:
+        console.print(
+            "Normalize 状态统计: "
+            f"NORMAL_SUCCESS={progress.normal_success_count}，"
+            f"REFUND={progress.refund_count}，"
+            f"PART_REFUND={progress.part_refund_count}"
+        )
+        return
+    console.print(
+        f"Normalize 进度: {progress.processed_count}，"
+        f"NORMAL_SUCCESS={progress.normal_success_count}，"
+        f"REFUND={progress.refund_count}，"
+        f"PART_REFUND={progress.part_refund_count}"
+    )
+
+
+def _confirm_unknown_statuses(statuses: list[str]) -> None:
+    console.print(f"发现未识别的交易状态: {', '.join(statuses)}")
+    for status in statuses:
+        normalized_status = (
+            cast(
+                str,
+                typer.prompt(
+                    f"请确认状态 [{status}] 属于 NORMAL_SUCCESS / REFUND / PART_REFUND",
+                    default="NORMAL_SUCCESS",
+                ),
+            )
+            .strip()
+            .upper()
+        )
+        if normalized_status not in {"NORMAL_SUCCESS", "REFUND", "PART_REFUND"}:
+            raise typer.BadParameter("状态只能是 NORMAL_SUCCESS / REFUND / PART_REFUND")
+        append_exact_mapping(Path(DEFAULT_STATUS_MAPPING_PATH), status, cast(NormalizedStatusChoice, normalized_status))
+        console.print(f"已写入状态映射: {status} -> {normalized_status}")
 
 
 class _BillRunProgressReporter:
@@ -82,11 +129,15 @@ def normalize_bill(
     if from_value is None:
         from_value = cast(str, typer.prompt("请输入from值", default="yy"))
 
-    try:
-        result = normalize_bill_file(input_path, from_value)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
-        console.print(f"❌ {exc}", style="red")
-        raise typer.Exit(1) from exc
+    while True:
+        try:
+            result = normalize_bill_file(input_path, from_value, progress_callback=_render_normalize_progress)
+            break
+        except UnknownBillStatusesError as exc:
+            _confirm_unknown_statuses(exc.statuses)
+        except (FileNotFoundError, ValueError, RuntimeError) as exc:
+            console.print(f"❌ {exc}", style="red")
+            raise typer.Exit(1) from exc
 
     console.print(f"输出文件: {result.output_path}")
     console.print(f"来源: {result.source}")
@@ -143,13 +194,28 @@ def run_bill(
     reporter_stopped = False
 
     try:
-        reporter.start()
-        result = run_bill_pipeline(input_path, from_value, progress_state=progress_state)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
-        reporter.stop()
-        reporter_stopped = True
-        console.print(f"❌ {exc}", style="red")
-        raise typer.Exit(1) from exc
+        while True:
+            try:
+                reporter.start()
+                result = run_bill_pipeline(
+                    input_path,
+                    from_value,
+                    progress_state=progress_state,
+                    normalize_progress_callback=_render_normalize_progress,
+                )
+                break
+            except UnknownBillStatusesError as exc:
+                reporter.stop()
+                reporter_stopped = True
+                _confirm_unknown_statuses(exc.statuses)
+                progress_state = BillRunProgressState()
+                reporter = _BillRunProgressReporter(progress_state, console)
+                reporter_stopped = False
+            except (FileNotFoundError, ValueError, RuntimeError) as exc:
+                reporter.stop()
+                reporter_stopped = True
+                console.print(f"❌ {exc}", style="red")
+                raise typer.Exit(1) from exc
     finally:
         if not reporter_stopped:
             reporter.stop()

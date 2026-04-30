@@ -281,6 +281,47 @@ def test_resolve_bill_structure_raises_without_failover() -> None:
     assert mock_create.call_count == 1
 
 
+def test_resolve_part_refund_amount_returns_structured_result() -> None:
+    from dataclasses import dataclass
+    from unittest.mock import patch
+
+    from beartools.bill.agent import resolve_part_refund_amount
+    from beartools.bill.models import PartRefundAmountResult
+
+    @dataclass
+    class _FakeRunResult:
+        output: object
+
+    class _FakeAgent:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.registered_tool = None
+
+        def tool_plain(self, func):
+            self.registered_tool = func
+            return func
+
+        def run_sync(self, _prompt: str) -> _FakeRunResult:
+            return _FakeRunResult(output=PartRefundAmountResult(refund_amount="1.00", reason="命中状态文本"))
+
+    with (
+        patch("beartools.bill.agent.get_llm_runtime") as mock_runtime,
+        patch("beartools.bill.agent.LLFactory.create", return_value="fake-model"),
+        patch("beartools.bill.agent.Agent", _FakeAgent),
+    ):
+        mock_runtime.return_value.get_active_node.return_value = object()
+        result = resolve_part_refund_amount(
+            counterparty="测试商户",
+            remark="状态显示已退款￥1.00",
+            status="已退款￥1.00",
+            amount="61.60",
+            source="微信",
+            transaction_time="2026-01-01 19:43:53",
+        )
+
+    assert result.refund_amount == "1.00"
+    assert result.reason == "命中状态文本"
+
+
 def test_analyze_bill_row_returns_correct_result() -> None:
     from beartools.bill.agent import analyze_bill_row
     from beartools.bill.models import (

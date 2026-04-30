@@ -1,0 +1,12 @@
+exact:
+  交易成功: NORMAL_SUCCESS
+  支付成功: NORMAL_SUCCESS
+  已转账: NORMAL_SUCCESS
+  对方已收钱: NORMAL_SUCCESS
+  已存入零钱: NORMAL_SUCCESS
+  已到账: NORMAL_SUCCESS
+  退款成功: REFUND
+  已全额退款: REFUND
+patterns:
+  - pattern: "^已退款"
+    normalized_status: PART_REFUND

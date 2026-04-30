@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from .models import BillRunProgressState
+from .models import BillRunProgressState, NormalizeProgressSnapshot, UnknownBillStatusesError
 from .service import analyze_bill_file, normalize_bill_file, run_bill_pipeline
 
-__all__ = ["normalize_bill_file", "analyze_bill_file", "run_bill_pipeline", "BillRunProgressState"]
+__all__ = [
+    "normalize_bill_file",
+    "analyze_bill_file",
+    "run_bill_pipeline",
+    "BillRunProgressState",
+    "NormalizeProgressSnapshot",
+    "UnknownBillStatusesError",
+]

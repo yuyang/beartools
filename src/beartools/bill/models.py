@@ -8,6 +8,7 @@ from typing import Literal
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 BillSource = Literal["支付宝", "微信", "京东", "未知"]
+BillNormalizedStatus = Literal["NORMAL_SUCCESS", "REFUND", "PART_REFUND"]
 
 
 @dataclass(slots=True)
@@ -78,7 +79,53 @@ class NormalizedBillRow:
     counterparty: str
     amount: str
     status: str
+    normalized_status: BillNormalizedStatus
     remark: str
+
+
+@dataclass(slots=True)
+class UnknownBillStatusesError(RuntimeError):
+    """存在未知账单状态时抛出的异常。"""
+
+    statuses: list[str]
+
+    def __post_init__(self) -> None:
+        RuntimeError.__init__(self, f"存在未识别的交易状态: {', '.join(self.statuses)}")
+
+
+@dataclass(slots=True)
+class BillStatusPatternRule:
+    """状态模式匹配规则。"""
+
+    pattern: str
+    normalized_status: BillNormalizedStatus
+
+
+@dataclass(slots=True)
+class BillStatusMappingConfig:
+    """账单状态映射配置。"""
+
+    exact: dict[str, BillNormalizedStatus]
+    patterns: list[BillStatusPatternRule] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class PartRefundAmountResult:
+    """部分退款金额修正结果。"""
+
+    refund_amount: str
+    reason: str
+
+
+@dataclass(slots=True)
+class NormalizeProgressSnapshot:
+    """归一化阶段进度快照。"""
+
+    processed_count: int
+    normal_success_count: int
+    refund_count: int
+    part_refund_count: int
+    is_final: bool = False
 
 
 @dataclass(slots=True)
