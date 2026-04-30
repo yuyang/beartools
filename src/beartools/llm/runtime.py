@@ -265,10 +265,24 @@ def _sanitize_probe_failure_reason(error: BaseException) -> str:
 
 
 def _build_healthy_node_pool() -> list[RuntimeNode]:
+    agent_config = get_config().agent
     configured_nodes = _collect_configured_nodes()
     if not configured_nodes:
         raise LLMRuntimeInitializationError("LLM 运行时初始化失败：未配置任何 agent 节点")
 
+    # 优先只检查 primary 节点，只要 primary 可用就可以了，candidates 节点后续使用时再检查
+    primary_config_node = agent_config.primary
+    if _is_configured_node(primary_config_node):
+        primary_node = RuntimeNode.from_config(primary_config_node)
+        try:
+            _probe_node(primary_node)
+            # primary 节点成功，直接返回包含 primary 的列表
+            return [primary_node]
+        except Exception:
+            # primary 失败，继续尝试其他节点
+            pass
+
+    # 如果 primary 不可用，尝试其他节点
     healthy_nodes: list[RuntimeNode] = []
     failed_reasons: list[str] = []
     for node in configured_nodes:
