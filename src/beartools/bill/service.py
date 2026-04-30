@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 import re
@@ -19,6 +18,7 @@ from .models import (
     BillFieldMapping,
     BillNormalizedStatus,
     BillRunProgressState,
+    BillStatusMappingConfig,
     BillStructureFileResult,
     NormalizeBillFileResult,
     NormalizeProgressSnapshot,
@@ -79,7 +79,7 @@ def normalize_bill_file(
     unknown_statuses = _collect_unknown_statuses(rows, structure)
     if unknown_statuses:
         raise UnknownBillStatusesError(unknown_statuses)
-    normalized_rows, ignored_lines, total_raw_data_rows, row_numbers = _normalize_rows(
+    normalized_rows, ignored_lines, total_raw_data_rows, _row_numbers = _normalize_rows(
         rows,
         structure,
         from_value=from_value,
@@ -87,12 +87,10 @@ def normalize_bill_file(
         progress_callback=progress_callback,
     )
 
-    # 3. 应用退款抵消逻辑
-    filtered_rows, ignored_lines = _apply_refund_offset(normalized_rows, row_numbers, ignored_lines)
-    output_row_count = len(filtered_rows)
+    output_row_count = len(normalized_rows)
 
-    # 4. 写入结果Excel
-    _write_normalized_excel(output_path, filtered_rows)
+    # 3. 写入结果Excel
+    _write_normalized_excel(output_path, normalized_rows)
 
     return NormalizeBillFileResult(
         input_path=source_path,
@@ -158,31 +156,21 @@ def _normalize_rows(
             break
         raw_amount = _normalize_amount(_get_column_value(row, column_map, field_mapping.amount.column_name))
         status = _get_column_value(row, column_map, field_mapping.status.column_name)
-        normalized_status = resolve_normalized_status(status, status_mapping)
-        if normalized_status is None:
-            raise RuntimeError(f"未识别的交易状态: {status}")
-        if normalized_status == "IGNORE":
+        resolved_row = _resolve_row_status_and_amount(
+            row=row,
+            column_map=column_map,
+            field_mapping=field_mapping,
+            raw_amount=raw_amount,
+            status=status,
+            source=structure.source,
+            status_mapping=status_mapping,
+            part_refund_amount_resolver=part_refund_amount_resolver,
+        )
+        if resolved_row is None:
             ignored_lines.append(original_line_number)
             ignore_count += 1
             continue
-        adjusted_amount = raw_amount
-
-        # 尝试转换为数字进行正负调整，转换失败保持原样
-        try:
-            adjusted_amount = _normalize_row_amount(
-                normalized_status=normalized_status,
-                raw_amount=raw_amount,
-                row=row,
-                column_map=column_map,
-                field_mapping=field_mapping,
-                status=status,
-                source=structure.source,
-                transaction_time=_get_column_value(row, column_map, field_mapping.transaction_time.column_name),
-                part_refund_amount_resolver=part_refund_amount_resolver,
-            )
-        except (ValueError, TypeError):
-            # 不是合法数字，保持原始值
-            pass
+        normalized_status, adjusted_amount = resolved_row
 
         normalized_row = _build_normalized_row(
             row=row,
@@ -283,6 +271,56 @@ def _append_original_amount_remark(remark: str, raw_amount: str) -> str:
     if not remark:
         return original_amount_part
     return f"{remark}; {original_amount_part}"
+
+
+def _is_zero_amount(amount: str) -> bool:
+    return float(amount) == 0.0
+
+
+def _should_ignore_part_refund(normalized_status: BillNormalizedStatus, adjusted_amount: str) -> bool:
+    return normalized_status == "PART_REFUND" and _is_zero_amount(adjusted_amount)
+
+
+def _should_ignore_status(normalized_status: BillNormalizedStatus) -> bool:
+    return normalized_status == "IGNORE"
+
+
+def _resolve_row_status_and_amount(
+    *,
+    row: list[str],
+    column_map: dict[str, int],
+    field_mapping: BillFieldMapping,
+    raw_amount: str,
+    status: str,
+    source: str,
+    status_mapping: BillStatusMappingConfig,
+    part_refund_amount_resolver: PartRefundAmountResolver,
+) -> tuple[BillNormalizedStatus, str] | None:
+    normalized_status = resolve_normalized_status(status, status_mapping)
+    if normalized_status is None:
+        raise RuntimeError(f"未识别的交易状态: {status}")
+    if _should_ignore_status(normalized_status):
+        return None
+
+    adjusted_amount = raw_amount
+    try:
+        adjusted_amount = _normalize_row_amount(
+            normalized_status=normalized_status,
+            raw_amount=raw_amount,
+            row=row,
+            column_map=column_map,
+            field_mapping=field_mapping,
+            status=status,
+            source=source,
+            transaction_time=_get_column_value(row, column_map, field_mapping.transaction_time.column_name),
+            part_refund_amount_resolver=part_refund_amount_resolver,
+        )
+    except (ValueError, TypeError):
+        # 不是合法数字，保持原始值
+        pass
+    if _should_ignore_part_refund(normalized_status, adjusted_amount):
+        return None
+    return normalized_status, adjusted_amount
 
 
 def _update_normalize_progress_counts(
@@ -413,50 +451,6 @@ def _normalize_row_amount(
     refund_amount = abs(float(part_refund_result.refund_amount))
     net_amount = abs(amount_num) - refund_amount
     return f"{net_amount:g}"
-
-
-def _apply_refund_offset(
-    normalized_rows: list[NormalizedBillRow], row_numbers: list[int], ignored_lines: list[int]
-) -> tuple[list[NormalizedBillRow], list[int]]:
-    """应用退款抵消逻辑：配对相同金额的交易成功和退款成功行，两行都忽略"""
-    to_ignore_indices: set[int] = set()
-    success_by_amount: dict[float, list[int]] = defaultdict(list)  # 按金额绝对值存交易成功的行索引
-    refund_by_amount: dict[float, list[int]] = defaultdict(list)  # 按金额绝对值存退款成功的行索引
-
-    for idx, row in enumerate(normalized_rows):
-        try:
-            amount = float(row.amount)
-            abs_amount = abs(amount)
-            if row.normalized_status == "NORMAL_SUCCESS":
-                success_by_amount[abs_amount].append(idx)
-            elif row.normalized_status == "REFUND":
-                refund_by_amount[abs_amount].append(idx)
-        except (ValueError, TypeError):
-            # 非数字金额不参与匹配
-            continue
-
-    # 匹配相同金额的交易成功和退款成功，一一配对
-    for abs_amount, success_indices in success_by_amount.items():
-        if abs_amount not in refund_by_amount:
-            continue
-        refund_indices = refund_by_amount[abs_amount]
-        match_count = min(len(success_indices), len(refund_indices))
-        for i in range(match_count):
-            to_ignore_indices.add(success_indices[i])
-            to_ignore_indices.add(refund_indices[i])
-
-    # 过滤掉要忽略的行，将对应的行号加入忽略列表
-    filtered_rows: list[NormalizedBillRow] = []
-    new_ignored_lines = ignored_lines.copy()
-    for idx, (row, line_num) in enumerate(zip(normalized_rows, row_numbers, strict=True)):
-        if idx in to_ignore_indices:
-            new_ignored_lines.append(line_num)
-        else:
-            filtered_rows.append(row)
-
-    # 对忽略行号排序保持顺序
-    new_ignored_lines.sort()
-    return filtered_rows, new_ignored_lines
 
 
 def _write_normalized_excel(output_path: Path, rows: list[NormalizedBillRow]) -> None:

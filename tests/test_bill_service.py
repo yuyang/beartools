@@ -221,6 +221,53 @@ def test_normalize_bill_file_uses_part_refund_amount_resolver(tmp_path: Path) ->
     assert ws["G2"].value == "备注=状态显示已退款￥1.00; 原始金额=61.60"
 
 
+def test_normalize_bill_file_ignores_part_refund_when_net_amount_is_zero(tmp_path: Path) -> None:
+    from beartools.bill.models import (
+        BillFieldDetail,
+        BillFieldMapping,
+        BillRemarkColumns,
+        BillStructureFileResult,
+        PartRefundAmountResult,
+    )
+    from beartools.bill.service import normalize_bill_file
+
+    input_path = tmp_path / "wechat.csv"
+    input_path.write_text(
+        "标题\n交易时间,交易对方,金额,当前状态,备注\n2026-01-01 19:43:53,京东,61.60,已退款￥61.60,状态显示已退款￥61.60\n",
+        encoding="utf-8",
+    )
+    structure = BillStructureFileResult(
+        file_name=input_path.name,
+        source="微信",
+        header_row=2,
+        data_start_row=3,
+        field_mapping=BillFieldMapping(
+            transaction_time=BillFieldDetail(column_name="交易时间", confidence="high", reason=""),
+            counterparty=BillFieldDetail(column_name="交易对方", confidence="high", reason=""),
+            amount=BillFieldDetail(column_name="金额", confidence="high", reason=""),
+            status=BillFieldDetail(column_name="当前状态", confidence="high", reason=""),
+            remark_columns=BillRemarkColumns(column_names=["备注"], confidence="high", reason=""),
+        ),
+        sample_rows=[],
+        notes=[],
+    )
+
+    cwd = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        result = normalize_bill_file(
+            input_path,
+            "2601-",
+            structure_resolver=lambda _: structure,
+            part_refund_amount_resolver=lambda **_: PartRefundAmountResult(refund_amount="61.60", reason="全额退掉"),
+        )
+    finally:
+        os.chdir(cwd)
+
+    assert result.row_count == 0
+    assert result.ignored_lines == [3]
+
+
 def test_normalize_bill_file_reports_progress_every_100_rows_and_final(tmp_path: Path) -> None:
     from beartools.bill.models import BillFieldDetail, BillFieldMapping, BillRemarkColumns, BillStructureFileResult
     from beartools.bill.service import normalize_bill_file
@@ -392,21 +439,50 @@ def test_normalize_bill_file_skips_footer_summary_rows(tmp_path: Path) -> None:
     assert result.row_count == 1
 
 
-def test_apply_refund_offset_ignores_full_refund_only() -> None:
-    from beartools.bill.models import NormalizedBillRow
-    from beartools.bill.service import _apply_refund_offset
+def test_normalize_bill_file_keeps_full_refund_rows_without_offset(tmp_path: Path) -> None:
+    from openpyxl import load_workbook
 
-    rows = [
-        NormalizedBillRow("2601-", "支付宝", "2026-01-01", "淘宝", "10", "交易成功", "NORMAL_SUCCESS", ""),
-        NormalizedBillRow("2601-", "支付宝", "2026-01-02", "淘宝", "-10", "退款成功", "REFUND", ""),
-        NormalizedBillRow("2601-", "微信", "2026-01-03", "京东", "-1", "已退款￥1.00", "PART_REFUND", ""),
-    ]
+    from beartools.bill.models import BillFieldDetail, BillFieldMapping, BillRemarkColumns, BillStructureFileResult
+    from beartools.bill.service import normalize_bill_file
 
-    filtered_rows, ignored = _apply_refund_offset(rows, [3, 4, 5], [])
+    input_path = tmp_path / "wechat.csv"
+    input_path.write_text(
+        "标题\n交易时间,交易对方,金额,当前状态,备注\n"
+        "2026-01-01 10:00:00,商家A,10.00,支付成功,正常支付\n"
+        "2026-01-01 10:10:00,商家A,10.00,退款成功,全额退款\n",
+        encoding="utf-8",
+    )
+    structure = BillStructureFileResult(
+        file_name=input_path.name,
+        source="微信",
+        header_row=2,
+        data_start_row=3,
+        field_mapping=BillFieldMapping(
+            transaction_time=BillFieldDetail(column_name="交易时间", confidence="high", reason=""),
+            counterparty=BillFieldDetail(column_name="交易对方", confidence="high", reason=""),
+            amount=BillFieldDetail(column_name="金额", confidence="high", reason=""),
+            status=BillFieldDetail(column_name="当前状态", confidence="high", reason=""),
+            remark_columns=BillRemarkColumns(column_names=["备注"], confidence="high", reason=""),
+        ),
+        sample_rows=[],
+        notes=[],
+    )
 
-    assert len(filtered_rows) == 1
-    assert filtered_rows[0].normalized_status == "PART_REFUND"
-    assert ignored == [3, 4]
+    cwd = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        result = normalize_bill_file(input_path, "2601-", structure_resolver=lambda _: structure)
+    finally:
+        os.chdir(cwd)
+
+    assert result.row_count == 2
+    assert result.ignored_lines == []
+
+    wb = load_workbook(tmp_path / result.output_path)
+    ws = wb.active
+    assert ws.max_row == 3
+    assert ws["D2"].value == "10"
+    assert ws["D3"].value == "-10"
 
 
 def test_normalize_bill_file_raises_when_mapped_column_missing(tmp_path: Path) -> None:
