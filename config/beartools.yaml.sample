@@ -81,3 +81,9 @@ agent:
       api_key: "@get agent.zhizengzeng.key"
       extra_headers: {}
       timeout_seconds: 30
+
+# Gmail 配置
+gmail:
+  output_dir: "email"
+  default_days: 3
+  max_results: 100

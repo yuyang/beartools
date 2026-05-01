@@ -17,3 +17,16 @@ def test_uv_run_can_resolve_beartools_entrypoint() -> None:
 
     assert result.returncode == 0
     assert result.stdout.strip().endswith("beartools")
+
+
+def test_cli_registers_gmail_group() -> None:
+    from typer.testing import CliRunner
+
+    from beartools.cli import app
+
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["gmail", "--help"])
+
+    assert result.exit_code == 0
+    assert "fetch" in result.stdout

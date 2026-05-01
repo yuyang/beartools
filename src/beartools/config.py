@@ -90,6 +90,17 @@ class AgentConfig:
 
 
 @dataclass
+class GmailConfig:
+    """Gmail 配置"""
+
+    client_secret_file: Path = Path("config/client_secret.json")
+    token_file: Path = Path("config/gmail.token.json")
+    output_dir: Path = Path("email")
+    default_days: int = 3
+    max_results: int = 100
+
+
+@dataclass
 class Config:
     """主配置"""
 
@@ -97,6 +108,7 @@ class Config:
     doctor: DoctorConfig = field(default_factory=DoctorConfig)
     siyuan: SiyuanConfig = field(default_factory=SiyuanConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    gmail: GmailConfig = field(default_factory=GmailConfig)
 
 
 # 删除对节点是否配置的额外校验，保持错误更直接由解析阶段抛出
@@ -194,6 +206,27 @@ def _parse_provider(value: object, path: str) -> str:
     return provider
 
 
+def _parse_positive_int(value: object, path: str, default: int) -> int:
+    """解析正整数配置。"""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise RuntimeError(f"{path} 必须是正整数")
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, float) and value.is_integer() and value > 0:
+        return int(value)
+    if isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError as e:
+            raise RuntimeError(f"{path} 必须是正整数") from e
+        if parsed > 0:
+            return parsed
+    raise RuntimeError(f"{path} 必须是正整数")
+
+
 def _parse_agent_node_config(node_settings: object, path: str) -> AgentNodeConfig:
     """解析单个智能体节点配置"""
 
@@ -255,6 +288,19 @@ def _parse_agent_config(settings: _SettingsLike) -> AgentConfig:
             candidates.append(_parse_agent_node_config(candidate_settings, f"agent.candidates[{index}]"))
 
     return AgentConfig(primary=primary, candidates=candidates)
+
+
+def _parse_gmail_config(settings: _SettingsLike) -> GmailConfig:
+    """解析 Gmail 配置。"""
+
+    gmail_settings = _as_dict(settings.get("gmail", {}), "gmail")
+    return GmailConfig(
+        client_secret_file=Path(str(gmail_settings.get("client_secret_file", "config/client_secret.json"))),
+        token_file=Path(str(gmail_settings.get("token_file", "config/gmail.token.json"))),
+        output_dir=Path(str(gmail_settings.get("output_dir", "email"))),
+        default_days=_parse_positive_int(gmail_settings.get("default_days", 3), "gmail.default_days", 3),
+        max_results=_parse_positive_int(gmail_settings.get("max_results", 100), "gmail.max_results", 100),
+    )
 
 
 def _convert_to_dataclass(settings: _SettingsLike) -> Config:
@@ -325,7 +371,9 @@ def _convert_to_dataclass(settings: _SettingsLike) -> Config:
 
     agent_config = _parse_agent_config(settings)
 
-    return Config(log=log_config, doctor=doctor_config, siyuan=siyuan_config, agent=agent_config)
+    gmail_config = _parse_gmail_config(settings)
+
+    return Config(log=log_config, doctor=doctor_config, siyuan=siyuan_config, agent=agent_config, gmail=gmail_config)
 
 
 def load_config() -> Config:

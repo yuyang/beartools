@@ -13,6 +13,7 @@ from beartools.commands.bill import bill_app
 from beartools.commands.clear.command import clear_command
 from beartools.commands.doctor.command import doctor_command
 from beartools.commands.fetch.command import fetch
+from beartools.commands.gmail import gmail_app
 from beartools.commands.markdown import markdown_app
 from beartools.commands.record import record_app
 from beartools.commands.siyuan import siyuan_app
@@ -64,6 +65,9 @@ app.add_typer(bill_app, name="bill", help="账单处理相关操作，直接输�
 
 # 注册fetch作为子命令
 app.command(name="fetch", help="根据URL抓取内容")(fetch)
+
+# 注册gmail作为子命令
+app.add_typer(gmail_app, name="gmail", help="Gmail 邮件相关操作")
 
 
 def _main_wrapper() -> None:
