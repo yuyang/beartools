@@ -59,7 +59,6 @@ doctor:
 
 # 思源笔记配置
 siyuan:
-  token: "REPLACE_ME"
   default_note: "REPLACE_ME_NOTE_ID"
   notebook: "REPLACE_ME_NOTEBOOK_ID"
   path: "/REPLACE_ME_PATH"
@@ -71,7 +70,7 @@ agent:
     provider: "openai"
     base_url: "https://api.example.com/v1"
     model: "gpt-4.1-mini"
-    api_key: "REPLACE_ME"
+    api_key: "@get agent.openrouter.key"
     extra_headers: {}
     timeout_seconds: 30
   candidates:
@@ -79,6 +78,6 @@ agent:
       provider: "openrouter"
       base_url: "https://api-backup.example.com/v1"
       model: "gpt-4.1-mini"
-      api_key: "REPLACE_ME"
+      api_key: "@get agent.zhizengzeng.key"
       extra_headers: {}
       timeout_seconds: 30

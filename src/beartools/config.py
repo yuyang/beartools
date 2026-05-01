@@ -1,7 +1,9 @@
 """配置文件读取模块
 
-读取当前工作目录下的config/beartools.yaml配置文件，
-支持.env文件和环境变量覆盖（BEARTOOLS_前缀）。
+读取当前工作目录下的 config/beartools.yaml 和 config/beartools.secrets.yaml，
+支持 .env 文件和环境变量覆盖（BEARTOOLS_前缀）。
+
+配置优先级：环境变量 > beartools.secrets.yaml > beartools.yaml
 """
 
 from __future__ import annotations
@@ -97,6 +99,9 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
 
 
+# 删除对节点是否配置的额外校验，保持错误更直接由解析阶段抛出
+
+
 def _ensure_config_dir() -> None:
     """确保config目录存在"""
     cwd = Path.cwd()
@@ -130,7 +135,15 @@ def _parse_timeout_seconds(value: object, field_name: str) -> int:
 def _as_dict(value: object, path: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{path} 必须是字典")
-    return {str(key): val for key, val in value.items()}
+    result: dict[str, object] = {}
+    # 遍历每个key的时候可能触发dynaconf @get的懒解析，需要捕获解析错误
+    for key, val in value.items():
+        try:
+            # 访问value的时候可能触发@get解析
+            result[str(key)] = val
+        except Exception as e:
+            raise RuntimeError(f"{path}.{str(key)} 引用的配置路径不存在: {e}") from e
+    return result
 
 
 def _as_list(value: object, path: str) -> list[object]:
@@ -148,8 +161,14 @@ def _require_non_empty_string(value: object, path: str) -> str:
 def _parse_api_key(value: object, path: str) -> str:
     if value is None:
         return ""
-    if isinstance(value, str):
-        return value
+    # 如果是dynaconf的lazy求值，访问时会自动解析，需要捕获解析错误
+    try:
+        if isinstance(value, str):
+            return value
+        str_val = str(value)
+        return str_val
+    except Exception as e:
+        raise RuntimeError(f"{path}.api_key 引用的配置路径不存在: {e}") from e
     raise RuntimeError(f"{path}.api_key 必须是字符串")
 
 
@@ -177,15 +196,33 @@ def _parse_provider(value: object, path: str) -> str:
 
 def _parse_agent_node_config(node_settings: object, path: str) -> AgentNodeConfig:
     """解析单个智能体节点配置"""
-    node_dict = _as_dict(node_settings, path)
 
-    name_val = _require_non_empty_string(node_dict.get("name"), f"{path}.name")
-    provider_val = _parse_provider(node_dict.get("provider"), path)
-    base_url_val = _require_non_empty_string(node_dict.get("base_url"), f"{path}.base_url")
-    model_val = _require_non_empty_string(node_dict.get("model"), f"{path}.model")
-    api_key = _parse_api_key(node_dict.get("api_key", ""), path)
-    extra_headers = _parse_extra_headers(node_dict.get("extra_headers", {}), path)
-    timeout_seconds = _parse_timeout_seconds(node_dict.get("timeout_seconds", 30), f"{path}.timeout_seconds")
+    # 直接单独获取每个字段，避免提前触发所有字段的懒解析导致错误无法捕获
+    # 因为node_settings是Box，每个字段访问都会触发懒解析（比如@get），所以单独获取可以正确捕获api_key的解析错误
+    def get_field(field: str, default: object = None) -> object:
+        if isinstance(node_settings, dict):
+            dict_node_settings = cast(dict[str, object], node_settings)
+            return dict_node_settings.get(field, default)
+        # 如果是dynaconf的Box对象，使用get方法
+        if not hasattr(node_settings, "get"):
+            return default
+        settings_like = cast(_SettingsLike, node_settings)
+        return settings_like.get(field, default)
+
+    name_val = _require_non_empty_string(get_field("name"), f"{path}.name")
+    provider_val = _parse_provider(get_field("provider"), path)
+    base_url_val = _require_non_empty_string(get_field("base_url"), f"{path}.base_url")
+    model_val = _require_non_empty_string(get_field("model"), f"{path}.model")
+
+    # api_key单独处理，捕获解析错误
+    try:
+        api_key_val = get_field("api_key", "")
+        api_key = _parse_api_key(api_key_val, path)
+    except Exception as e:
+        raise RuntimeError(f"{path}.api_key 引用的配置路径不存在: {e}") from e
+
+    extra_headers = _parse_extra_headers(get_field("extra_headers", {}), path)
+    timeout_seconds = _parse_timeout_seconds(get_field("timeout_seconds", 30), f"{path}.timeout_seconds")
 
     return AgentNodeConfig(
         name=name_val,
@@ -275,11 +312,10 @@ def _convert_to_dataclass(settings: _SettingsLike) -> Config:
     doctor_config = DoctorConfig(enabled_checks=enabled_checks, checks=merged_checks)
 
     # 处理siyuan配置
-    siyuan_settings = _as_dict(settings.get("siyuan", {}), "siyuan")
-    token_val = siyuan_settings.get("token", "")
-    default_note_val = siyuan_settings.get("default_note", "")
-    notebook_val = siyuan_settings.get("notebook", "")
-    path_val2 = siyuan_settings.get("path", "")
+    token_val = settings.get("siyuan.token", "")
+    default_note_val = settings.get("siyuan.default_note", "")
+    notebook_val = settings.get("siyuan.notebook", "")
+    path_val2 = settings.get("siyuan.path", "")
     siyuan_config = SiyuanConfig(
         token=str(token_val),
         default_note=str(default_note_val),
@@ -293,7 +329,9 @@ def _convert_to_dataclass(settings: _SettingsLike) -> Config:
 
 
 def load_config() -> Config:
-    """加载配置，从config/beartools.yaml读取，支持环境变量覆盖
+    """加载配置，从config/beartools.yaml和config/beartools.secrets.yaml读取，支持环境变量覆盖
+
+    配置优先级：环境变量 > beartools.secrets.yaml > beartools.yaml
 
     Returns:
         Config: 加载完成的配置对象
@@ -305,16 +343,17 @@ def load_config() -> Config:
     _ensure_config_dir()
     cwd = Path.cwd()
     config_path = cwd / "config" / "beartools.yaml"
+    secrets_path = cwd / "config" / "beartools.secrets.yaml"
 
-    # 使用dynaconf加载配置
     settings = _create_lazy_settings(
         envvar_prefix="BEARTOOLS",
-        settings_file=str(config_path),
+        settings_files=[str(config_path), str(secrets_path)],
         load_dotenv=True,
         core_loaders=["YAML", "ENV"],
+        merge_enabled=True,
+        environments=False,
     )
 
-    # 转换为数据类保持接口兼容
     config = _convert_to_dataclass(settings)
     _config_instance = config
     return config

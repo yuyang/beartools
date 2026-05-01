@@ -73,7 +73,10 @@ class SiyuanHandler:
         config = get_config()
         token = config.siyuan.token
         if not token:
-            raise SiyuanError("请先在config/beartools.yaml中配置siyuan.token")
+            # 提示同时允许主配置、secrets 或环境变量中配置 token
+            raise SiyuanError(
+                "请先在主配置(config/beartools.yaml)、secrets(config/beartools.secrets.yaml)或环境变量(BEARTOOLS_SIYUAN__TOKEN)中配置 siyuan.token"
+            )
         return token
 
     async def list_notebooks(self) -> list[NotebookInfo]:

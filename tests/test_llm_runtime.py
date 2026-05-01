@@ -255,15 +255,16 @@ class TestLLRuntime:
         assert runtime.get_active_node() is primary
         assert [node.name for node in runtime.available_nodes] == ["primary", "candidate-a"]
 
-    def test_runtime_prefers_first_healthy_node_during_initialization(self) -> None:
+    def test_runtime_uses_only_primary_when_primary_probe_succeeds(self) -> None:
         primary = create_agent_node_config("primary", provider="openai")
         candidate_a = create_agent_node_config("candidate-a", provider="openrouter")
         candidate_b = create_agent_node_config("candidate-b", provider="openai")
         config = create_config(primary, candidate_a, candidate_b)
 
+        probed_names: list[str] = []
+
         def probe_node(node: _RuntimeNodeProtocol) -> None:
-            if node.name == "candidate-b":
-                raise TimeoutError("probe timed out")
+            probed_names.append(node.name)
 
         with (
             patch.object(runtime_module, "get_config", return_value=config),
@@ -271,13 +272,36 @@ class TestLLRuntime:
         ):
             runtime = runtime_module.create_llm_runtime()
 
-        assert [node.name for node in runtime.healthy_nodes] == ["primary", "candidate-a"]
+        assert probed_names == ["primary"]
+        assert [node.name for node in runtime.healthy_nodes] == ["primary"]
         assert runtime.get_active_node().name == "primary"
-        assert runtime.get_active_node().name == "primary"
-        assert [node.name for node in runtime.available_nodes] == ["primary", "candidate-a"]
-        assert [
-            node.name for node in runtime.healthy_nodes if node.fingerprint != runtime.get_active_node().fingerprint
-        ] == ["candidate-a"]
+        assert [node.name for node in runtime.available_nodes] == ["primary"]
+
+    def test_runtime_probes_candidates_in_order_when_primary_probe_fails(self) -> None:
+        primary = create_agent_node_config("primary", provider="openai")
+        candidate_a = create_agent_node_config("candidate-a", provider="openrouter")
+        candidate_b = create_agent_node_config("candidate-b", provider="openai")
+        config = create_config(primary, candidate_a, candidate_b)
+
+        probed_names: list[str] = []
+
+        def probe_node(node: _RuntimeNodeProtocol) -> None:
+            probed_names.append(node.name)
+            if node.name == "primary":
+                raise TimeoutError("primary probe timed out")
+            if node.name == "candidate-b":
+                raise TimeoutError("candidate-b probe timed out")
+
+        with (
+            patch.object(runtime_module, "get_config", return_value=config),
+            patch.object(runtime_module, "_probe_node", side_effect=probe_node),
+        ):
+            runtime = runtime_module.create_llm_runtime()
+
+        assert probed_names == ["primary", "primary", "candidate-a", "candidate-b"]
+        assert [node.name for node in runtime.healthy_nodes] == ["candidate-a"]
+        assert runtime.get_active_node().name == "candidate-a"
+        assert [node.name for node in runtime.available_nodes] == ["candidate-a"]
 
     def test_fail_current_call_then_reselect_future_node(self) -> None:
         primary = create_runtime_node("primary")
@@ -435,7 +459,7 @@ class TestLLRuntime:
 
         class FakeChatCompletions:
             @staticmethod
-            def create(**kwargs: object) -> object:
+            def create(**_: object) -> object:
                 return SimpleNamespace(
                     choices=[
                         SimpleNamespace(
@@ -458,7 +482,7 @@ class TestLLRuntime:
 
         class FakeChatCompletions:
             @staticmethod
-            def create(**kwargs: object) -> object:
+            def create(**_: object) -> object:
                 return SimpleNamespace(
                     choices=[
                         SimpleNamespace(

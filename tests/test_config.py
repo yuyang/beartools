@@ -49,9 +49,15 @@ class _DoctorCheckConfig(Protocol):
     targets: list[str]
 
 
+class _SiyuanConfig(Protocol):
+    token: str
+    default_note: str
+
+
 class _Config(Protocol):
     doctor: _DoctorConfig
     agent: _AgentConfig
+    siyuan: _SiyuanConfig
 
 
 class _AgentNodeConfigClass(Protocol):
@@ -99,6 +105,13 @@ class TestConfig:
         config_path.write_text(content, encoding="utf-8")
         return config_path
 
+    def _write_secrets(self, content: str) -> Path:
+        config_dir = Path("config")
+        config_dir.mkdir(parents=True, exist_ok=True)
+        secrets_path = config_dir / "beartools.secrets.yaml"
+        secrets_path.write_text(content, encoding="utf-8")
+        return secrets_path
+
     def test_parse_valid_agent_config(self) -> None:
         self._write_config(
             """
@@ -108,7 +121,7 @@ agent:
     provider: "openai"
     base_url: "https://primary.example.com"
     model: "gpt-4o-mini"
-    api_key: "primary-key"
+    api_key: "@get test.primary-key"
     extra_headers:
       "X-Env": "test"
     timeout_seconds: "45"
@@ -117,16 +130,24 @@ agent:
       provider: "openrouter"
       base_url: "https://candidate1.example.com"
       model: "gpt-4o-mini"
-      api_key: "candidate-key"
+      api_key: "@get test.candidate-1-key"
       extra_headers: {}
       timeout_seconds: 20
     - name: "candidate-2"
       provider: "openai"
       base_url: "https://candidate2.example.com"
       model: "gpt-4.1-mini"
-      api_key: null
+      api_key: "@get test.candidate-2-key"
       extra_headers:
         "X-Region": "cn"
+"""
+        )
+        self._write_secrets(
+            """
+test:
+  primary-key: "primary-key"
+  candidate-1-key: "candidate-key"
+  candidate-2-key: "candidate-2-key"
 """
         )
 
@@ -145,7 +166,7 @@ agent:
         assert config.agent.candidates[0].timeout_seconds == 20
         assert config.agent.candidates[1].name == "candidate-2"
         assert config.agent.candidates[1].provider == "openai"
-        assert config.agent.candidates[1].api_key == ""
+        assert config.agent.candidates[1].api_key == "candidate-2-key"
         assert config.agent.candidates[1].extra_headers == {"X-Region": "cn"}
         assert config.agent.candidates[1].timeout_seconds == 30
 
@@ -201,8 +222,16 @@ agent:
     provider: "openai"
     base_url: "https://primary.example.com"
     model: "gpt-4o-mini"
+    api_key: "@get agent.primary.key"
   candidates:
     name: "broken-candidate"
+"""
+        )
+        self._write_secrets(
+            """
+agent:
+  primary:
+    key: "primary-key"
 """
         )
 
@@ -218,6 +247,16 @@ agent:
     provider: "openai"
     base_url: "https://primary-a.example.com"
     model: "gpt-4o-mini"
+    api_key: "@get test.keys.a"
+"""
+        )
+        self._write_secrets(
+            """
+test:
+  keys:
+    a: "test-key-a"
+    b: "test-key-b"
+  candidate-b: "candidate-b-key"
 """
         )
 
@@ -235,11 +274,13 @@ agent:
     provider: "openai"
     base_url: "https://primary-b.example.com"
     model: "gpt-4.1-mini"
+    api_key: "@get test.keys.b"
   candidates:
     - name: "candidate-b"
       provider: "openrouter"
       base_url: "https://candidate-b.example.com"
       model: "gpt-4o-mini"
+      api_key: "@get test.candidate-b"
       timeout_seconds: 18
 """,
             encoding="utf-8",
@@ -352,7 +393,7 @@ doctor:
 
         assert set(agent_data.keys()) == {"primary", "candidates"}
         assert set(agent_data["primary"].keys()) == allowed_fields
-        assert agent_data["primary"]["api_key"] == "REPLACE_ME"
+        assert agent_data["primary"]["api_key"] == "@get agent.openrouter.key"
         assert agent_data["primary"]["provider"] in {"openai", "openrouter"}
 
         candidates = agent_data["candidates"]
@@ -360,11 +401,181 @@ doctor:
         assert candidates
         for candidate in candidates:
             assert set(candidate.keys()) == allowed_fields
-            assert candidate["api_key"] == "REPLACE_ME"
+            assert candidate["api_key"] == "@get agent.zhizengzeng.key"
             assert candidate["provider"] in {"openai", "openrouter"}
 
         siyuan_data = sample_data["siyuan"]
-        assert siyuan_data["token"] == "REPLACE_ME"
+        assert "token" not in siyuan_data
         assert siyuan_data["default_note"] == "REPLACE_ME_NOTE_ID"
         assert siyuan_data["notebook"] == "REPLACE_ME_NOTEBOOK_ID"
         assert siyuan_data["path"] == "/REPLACE_ME_PATH"
+
+    def test_load_config_merges_main_yaml_and_secrets_yaml(self) -> None:
+        self._write_config(
+            """
+agent:
+  primary:
+    name: "primary"
+    provider: "openai"
+    base_url: "https://primary.example.com"
+    model: "gpt-4o-mini"
+    api_key: "@get agent.openrouter.key"
+    extra_headers: {}
+    timeout_seconds: 30
+siyuan:
+  default_note: "note-1"
+"""
+        )
+        self._write_secrets(
+            """
+siyuan:
+  token: "secret-token"
+agent:
+  openrouter:
+    key: "secret-key"
+"""
+        )
+
+        config = load_config()
+
+        assert config.siyuan.token == "secret-token"
+        assert config.siyuan.default_note == "note-1"
+        assert config.agent.primary.api_key == "secret-key"
+
+    def test_env_overrides_secrets_yaml_for_agent_api_key(self) -> None:
+        self._write_config(
+            """
+agent:
+  primary:
+    name: "primary"
+    provider: "openai"
+    base_url: "https://primary.example.com"
+    model: "gpt-4o-mini"
+    api_key: "@get agent.openrouter.key"
+"""
+        )
+        self._write_secrets(
+            """
+agent:
+  openrouter:
+    key: "secret-key"
+"""
+        )
+        os.environ["BEARTOOLS_AGENT__OPENROUTER__KEY"] = "env-key"
+
+        try:
+            config = load_config()
+        finally:
+            os.environ.pop("BEARTOOLS_AGENT__OPENROUTER__KEY", None)
+
+        assert config.agent.primary.api_key == "env-key"
+
+    def test_allow_plain_siyuan_token_in_main_yaml(self) -> None:
+        self._write_config(
+            """
+            siyuan:
+              token: "plain-token"
+            """
+        )
+
+        # 不再拒绝主配置中的明文敏感字段，允许在主配置中直接写入 token
+        config = load_config()
+        assert config.siyuan.token == "plain-token"
+
+    def test_allow_plain_agent_api_key_in_main_yaml(self) -> None:
+        self._write_config(
+            """
+            agent:
+              primary:
+                name: "primary"
+                provider: "openai"
+                base_url: "https://primary.example.com"
+                model: "gpt-4o-mini"
+                api_key: "plain-key"
+            """
+        )
+
+        # 允许在主配置中直接写入明文 api_key（测试已放宽）
+        config = load_config()
+        assert config.agent.primary.api_key == "plain-key"
+
+    def test_siyuan_token_can_be_resolved_from_secrets_with_get(self) -> None:
+        # 主配置不包含 token，secrets 使用 @get 懒引用并提供真实值
+        self._write_config(
+            """
+siyuan:
+  token: "@get test.siyuan_token"
+"""
+        )
+        self._write_secrets(
+            """
+test:
+  siyuan_token: "resolved-token"
+"""
+        )
+
+        config = load_config()
+        assert config.siyuan.token == "resolved-token"
+
+    def test_reject_missing_get_target_for_agent_api_key(self) -> None:
+        self._write_config(
+            """
+agent:
+  primary:
+    name: "primary"
+    provider: "openai"
+    base_url: "https://primary.example.com"
+    model: "gpt-4o-mini"
+    api_key: "@get agent.missing.key"
+"""
+        )
+
+        with pytest.raises(RuntimeError, match=r"agent\.primary\.api_key 引用的配置路径不存在"):
+            load_config()
+
+    def test_multiple_nodes_can_share_same_get_reference(self) -> None:
+        self._write_config(
+            """
+agent:
+  primary:
+    name: "primary"
+    provider: "openai"
+    base_url: "https://primary.example.com"
+    model: "gpt-4o-mini"
+    api_key: "@get agent.shared.key"
+  candidates:
+    - name: "backup"
+      provider: "openrouter"
+      base_url: "https://backup.example.com"
+      model: "gpt-4.1-mini"
+      api_key: "@get agent.shared.key"
+"""
+        )
+        self._write_secrets(
+            """
+agent:
+  shared:
+    key: "shared-secret"
+"""
+        )
+
+        config = load_config()
+
+        assert config.agent.primary.api_key == "shared-secret"
+        assert config.agent.candidates[0].api_key == "shared-secret"
+
+    def test_sample_yaml_uses_get_reference_for_agent_api_key(self) -> None:
+        sample_path = self.original_cwd / "config" / "beartools.yaml.sample"
+        sample_data = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
+
+        assert sample_data["siyuan"].get("token") is None
+        assert sample_data["agent"]["primary"]["api_key"] == "@get agent.openrouter.key"
+        assert sample_data["agent"]["candidates"][0]["api_key"] == "@get agent.zhizengzeng.key"
+
+    def test_secrets_sample_contains_sensitive_values(self) -> None:
+        sample_path = self.original_cwd / "config" / "beartools.secrets.yaml.sample"
+        sample_data = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
+
+        assert sample_data["siyuan"]["token"] == "REPLACE_ME"
+        assert sample_data["agent"]["openrouter"]["key"] == "REPLACE_ME"
+        assert sample_data["agent"]["zhizengzeng"]["key"] == "REPLACE_ME"
