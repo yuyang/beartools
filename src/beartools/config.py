@@ -101,6 +101,19 @@ class GmailConfig:
 
 
 @dataclass
+class CodexConfig:
+    """Codex 配置"""
+
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+    instructions: str = "你是 Codex 助手"
+    output_dir: Path = Path("output/codex")
+    timeout_seconds: int = 60
+    bin_path: str = ""
+
+
+@dataclass
 class Config:
     """主配置"""
 
@@ -109,6 +122,7 @@ class Config:
     siyuan: SiyuanConfig = field(default_factory=SiyuanConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     gmail: GmailConfig = field(default_factory=GmailConfig)
+    codex: CodexConfig = field(default_factory=CodexConfig)
 
 
 # 删除对节点是否配置的额外校验，保持错误更直接由解析阶段抛出
@@ -303,6 +317,21 @@ def _parse_gmail_config(settings: _SettingsLike) -> GmailConfig:
     )
 
 
+def _parse_codex_config(settings: _SettingsLike) -> CodexConfig:
+    """解析 Codex 配置。"""
+
+    codex_settings = _as_dict(settings.get("codex", {}), "codex")
+    return CodexConfig(
+        base_url=str(codex_settings.get("base_url", "")),
+        api_key=str(codex_settings.get("api_key", "")),
+        model=str(codex_settings.get("model", "")),
+        instructions=str(codex_settings.get("instructions", "你是 Codex 助手")),
+        output_dir=Path(str(codex_settings.get("output_dir", "output/codex"))),
+        timeout_seconds=_parse_positive_int(codex_settings.get("timeout_seconds", 60), "codex.timeout_seconds", 60),
+        bin_path=str(codex_settings.get("bin_path", "")),
+    )
+
+
 def _convert_to_dataclass(settings: _SettingsLike) -> Config:
     """将dynaconf设置转换为Config数据类，保持接口兼容"""
     # 处理log配置
@@ -373,7 +402,16 @@ def _convert_to_dataclass(settings: _SettingsLike) -> Config:
 
     gmail_config = _parse_gmail_config(settings)
 
-    return Config(log=log_config, doctor=doctor_config, siyuan=siyuan_config, agent=agent_config, gmail=gmail_config)
+    codex_config = _parse_codex_config(settings)
+
+    return Config(
+        log=log_config,
+        doctor=doctor_config,
+        siyuan=siyuan_config,
+        agent=agent_config,
+        gmail=gmail_config,
+        codex=codex_config,
+    )
 
 
 def load_config() -> Config:

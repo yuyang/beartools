@@ -30,3 +30,16 @@ def test_cli_registers_gmail_group() -> None:
 
     assert result.exit_code == 0
     assert "fetch" in result.stdout
+
+
+def test_cli_registers_codex_group() -> None:
+    from typer.testing import CliRunner
+
+    from beartools.cli import app
+
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["codex", "--help"])
+
+    assert result.exit_code == 0
+    assert "run" in result.stdout

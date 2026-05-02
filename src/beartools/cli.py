@@ -11,6 +11,7 @@ import typer
 
 from beartools.commands.bill import bill_app
 from beartools.commands.clear.command import clear_command
+from beartools.commands.codex import codex_app
 from beartools.commands.doctor.command import doctor_command
 from beartools.commands.fetch.command import fetch
 from beartools.commands.gmail import gmail_app
@@ -68,6 +69,9 @@ app.command(name="fetch", help="根据URL抓取内容")(fetch)
 
 # 注册gmail作为子命令
 app.add_typer(gmail_app, name="gmail", help="Gmail 邮件相关操作")
+
+# 注册codex作为子命令
+app.add_typer(codex_app, name="codex", help="Codex 相关操作")
 
 
 def _main_wrapper() -> None:

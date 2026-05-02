@@ -54,10 +54,19 @@ class _SiyuanConfig(Protocol):
     default_note: str
 
 
+class _CodexConfig(Protocol):
+    base_url: str
+    api_key: str
+    model: str
+    output_dir: Path
+    timeout_seconds: int
+
+
 class _Config(Protocol):
     doctor: _DoctorConfig
     agent: _AgentConfig
     siyuan: _SiyuanConfig
+    codex: _CodexConfig
 
 
 class _AgentNodeConfigClass(Protocol):
@@ -579,3 +588,29 @@ agent:
         assert sample_data["siyuan"]["token"] == "REPLACE_ME"
         assert sample_data["agent"]["openrouter"]["key"] == "REPLACE_ME"
         assert sample_data["agent"]["zhizengzeng"]["key"] == "REPLACE_ME"
+
+    def test_load_config_parses_codex_section(self) -> None:
+        self._write_config(
+            """
+codex:
+  base_url: "https://codex.example.com"
+  model: "codex-mini-latest"
+  output_dir: "codex-output"
+  timeout_seconds: 45
+"""
+        )
+        self._write_secrets(
+            """
+codex:
+  api_key: "secret-key"
+"""
+        )
+
+        config = load_config()
+
+        assert config.codex.base_url == "https://codex.example.com"
+        assert config.codex.api_key == "secret-key"
+        assert config.codex.model == "codex-mini-latest"
+        assert config.codex.instructions == "你是 Codex 助手"
+        assert config.codex.output_dir == Path("codex-output")
+        assert config.codex.timeout_seconds == 45

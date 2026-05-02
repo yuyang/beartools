@@ -87,3 +87,12 @@ gmail:
   output_dir: "email"
   default_days: 3
   max_results: 100
+
+# Codex 配置
+codex:
+  base_url: "https://codex.example.com"
+  model: "codex-mini-latest"
+  instructions: "你是 Codex 助手"
+  output_dir: "output/codex"
+  timeout_seconds: 60
+  # bin_path: "/usr/local/bin/codex"
