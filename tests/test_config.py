@@ -388,7 +388,7 @@ doctor:
             "https://www.google.com/generate_204",
             "https://www.youtube.com/",
             "https://www.facebook.com/",
-            "https://x.com/",
+            "https://www.wikipedia.org/",
             "https://www.instagram.com/",
             "https://www.baidu.com/",
         ]
