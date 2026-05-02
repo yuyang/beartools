@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio.subprocess import PIPE
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from typing import cast
 
+from agents import ShellTool, Tool, WebSearchTool
+from agents.tool import ShellCallOutcome, ShellCommandOutput, ShellCommandRequest, ShellResult
 from rich.console import Console
 
 from beartools.config import CodexConfig, get_config
@@ -53,6 +57,63 @@ def _serialize_event(event: Mapping[str, object]) -> str:
     return json.dumps(event, ensure_ascii=False)
 
 
+async def _execute_shell_commands(commands: list[str], timeout_seconds: int) -> ShellResult:
+    """在 output/codex 目录执行 shell 命令。"""
+
+    working_dir = Path.cwd() / "output" / "codex"
+    working_dir.mkdir(parents=True, exist_ok=True)
+
+    outputs: list[ShellCommandOutput] = []
+    for command in commands:
+        process = await asyncio.create_subprocess_shell(
+            command,
+            cwd=working_dir,
+            stdout=PIPE,
+            stderr=PIPE,
+        )
+        try:
+            stdout_bytes, stderr_bytes = await _communicate_process(process.communicate(), timeout_seconds)
+            outcome = ShellCallOutcome(type="exit", exit_code=process.returncode)
+        except TimeoutError:
+            process.kill()
+            stdout_bytes, stderr_bytes = await _communicate_process(process.communicate(), timeout_seconds)
+            outcome = ShellCallOutcome(type="timeout")
+
+        outputs.append(
+            ShellCommandOutput(
+                command=command,
+                stdout=stdout_bytes.decode("utf-8", errors="replace"),
+                stderr=stderr_bytes.decode("utf-8", errors="replace"),
+                outcome=outcome,
+            )
+        )
+
+    return ShellResult(output=outputs)
+
+
+async def _communicate_process(communicate_result: object, timeout_seconds: int) -> tuple[bytes, bytes]:
+    """为 subprocess communicate 返回值补充静态类型。"""
+
+    return cast(
+        tuple[bytes, bytes],
+        await asyncio.wait_for(communicate_result, timeout=timeout_seconds),  # type: ignore[arg-type,misc]
+    )
+
+
+async def _shell_tool_executor(request: ShellCommandRequest) -> str | ShellResult:
+    """将 ShellTool 请求转交给本地执行器。"""
+
+    config = get_config().codex
+    commands = list(request.data.action.commands)
+    return await _execute_shell_commands(commands, timeout_seconds=config.timeout_seconds)
+
+
+def _build_codex_tools() -> list[Tool]:
+    """构建 Codex 运行时可用工具。"""
+
+    return [WebSearchTool(), ShellTool(executor=_shell_tool_executor)]
+
+
 async def _stream_codex_events(prompt: str) -> AsyncIterator[dict[str, object]]:
     from agents import Agent, OpenAIChatCompletionsModel, Runner, set_tracing_disabled
     from openai import AsyncOpenAI
@@ -64,7 +125,12 @@ async def _stream_codex_events(prompt: str) -> AsyncIterator[dict[str, object]]:
     set_tracing_disabled(True)
     client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
     model = OpenAIChatCompletionsModel(model=config.model, openai_client=client)
-    agent = Agent(name="Codex Runner", instructions=config.instructions, model=model)  # type: ignore[misc]
+    agent = Agent(
+        name="Codex Runner",
+        instructions=config.instructions,
+        model=model,
+        tools=_build_codex_tools(),
+    )  # type: ignore[misc]
     result = Runner.run_streamed(agent, input=prompt)  # type: ignore[misc]
     stream_events = result.stream_events
 

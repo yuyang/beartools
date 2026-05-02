@@ -5,14 +5,64 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
+from agents import RunContextWrapper
+from agents.tool import ShellActionRequest, ShellCallData, ShellCommandRequest
 import pytest
 from typer.testing import CliRunner
 
 from beartools.cli import app
+from beartools.config import CodexConfig, Config
 
 runner = CliRunner()
+
+
+def _build_fake_codex_config() -> Config:
+    return Config(codex=CodexConfig(base_url="https://example.com/v1", api_key="token", model="demo-model"))
+
+
+def _patch_codex_stream_dependencies(monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]) -> None:
+    class FakeAgent:
+        def __init__(self, *, name: str, instructions: str, model: object, tools: list[object]) -> None:
+            captured["name"] = name
+            captured["instructions"] = instructions
+            captured["model"] = model
+            captured["tools"] = tools
+
+    class FakeResult:
+        def stream_events(self) -> AsyncIterator[dict[str, object]]:
+            async def _empty() -> AsyncIterator[dict[str, object]]:
+                if False:
+                    yield {"type": "noop"}
+
+            return _empty()
+
+    class FakeRunner:
+        @staticmethod
+        def run_streamed(agent: object, input: str) -> FakeResult:
+            captured["runner_agent"] = agent
+            captured["input"] = input
+            return FakeResult()
+
+    class FakeModel:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+    def fake_set_tracing_disabled(_value: bool) -> None:
+        return None
+
+    monkeypatch.setattr("agents.Agent", FakeAgent)
+    monkeypatch.setattr("agents.Runner", FakeRunner)
+    monkeypatch.setattr("agents.OpenAIChatCompletionsModel", FakeModel)
+    monkeypatch.setattr("agents.set_tracing_disabled", fake_set_tracing_disabled)
+    monkeypatch.setattr("openai.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex.get_config", _build_fake_codex_config)
 
 
 def test_codex_run_reads_markdown_and_writes_default_outputs(tmp_path: Path) -> None:
@@ -65,8 +115,8 @@ def test_run_codex_markdown_streams_events_and_writes_outputs(tmp_path: Path, mo
 
     fake_events = [
         {"type": "reasoning_item_created", "text": "思考中"},
-        {"type": "tool_called", "name": "history_fun_fact", "arguments": {}},
-        {"type": "tool_output", "name": "history_fun_fact", "output": "工具输出"},
+        {"type": "tool_called", "name": "shell", "arguments": {}},
+        {"type": "tool_output", "name": "shell", "output": '{"stdout": "ok", "stderr": "", "exit_code": 0}'},
         {"type": "response.output_text.delta", "delta": "最终回答"},
         {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 20}},
     ]
@@ -74,7 +124,7 @@ def test_run_codex_markdown_streams_events_and_writes_outputs(tmp_path: Path, mo
     async def fake_stream_events(prompt: str) -> AsyncIterator[dict[str, object]]:
         assert prompt == "请执行"
         for event in fake_events:
-            yield event
+            yield cast(dict[str, object], event)
 
     from beartools.codex import run_codex_markdown_async
 
@@ -84,11 +134,15 @@ def test_run_codex_markdown_streams_events_and_writes_outputs(tmp_path: Path, mo
 
     result = asyncio.run(run_codex_markdown_async(md_file, None, None))
 
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
     assert result.final_text == "最终回答"
     assert result.final_output_file.read_text(encoding="utf-8")
-    assert result.trace_output_file.read_text(encoding="utf-8")
+    assert trace_text
     assert any("tool:start" in chunk for chunk in final_chunks)
+    assert any("shell" in chunk for chunk in final_chunks)
     assert any("thinking" in chunk for chunk in final_chunks)
+    assert "tool_output" in trace_text
+    assert "shell" in trace_text
 
 
 def test_codex_run_missing_markdown_file_exits_with_error(tmp_path: Path) -> None:
@@ -98,3 +152,85 @@ def test_codex_run_missing_markdown_file_exits_with_error(tmp_path: Path) -> Non
 
     assert result.exit_code == 1
     assert "错误:" in result.stdout
+
+
+def test_shell_executor_runs_in_output_codex_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    executed: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return (b"ok", b"")
+
+    async def fake_create_subprocess_shell(
+        command: str,
+        *,
+        cwd: Path,
+        stdout: object,
+        stderr: object,
+    ) -> FakeProcess:
+        executed["command"] = command
+        executed["cwd"] = cwd
+        executed["stdout"] = stdout
+        executed["stderr"] = stderr
+        return FakeProcess()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("asyncio.create_subprocess_shell", fake_create_subprocess_shell)
+
+    from beartools.codex import _execute_shell_commands
+
+    result = asyncio.run(_execute_shell_commands(["pwd"], timeout_seconds=5))
+
+    assert executed["command"] == "pwd"
+    assert executed["cwd"] == tmp_path / "output" / "codex"
+    assert result.output[0].stdout == "ok"
+
+
+def test_shell_tool_executor_uses_request_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_execute_shell_commands(commands: list[str], timeout_seconds: int) -> str:
+        captured["commands"] = commands
+        captured["timeout_seconds"] = timeout_seconds
+        return "done"
+
+    monkeypatch.setattr("beartools.codex._execute_shell_commands", fake_execute_shell_commands)
+
+    from beartools.codex import _shell_tool_executor
+
+    request = ShellCommandRequest(
+        ctx_wrapper=cast(RunContextWrapper[object], None),
+        data=ShellCallData(
+            call_id="call-1",
+            action=ShellActionRequest(commands=["ls", "pwd"]),
+        ),
+    )
+
+    result = asyncio.run(_shell_tool_executor(request))
+
+    assert captured["commands"] == ["ls", "pwd"]
+    assert captured["timeout_seconds"] == 60
+    assert result == "done"
+
+
+def test_stream_codex_events_builds_agent_with_websearch_and_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    _patch_codex_stream_dependencies(monkeypatch, captured)
+
+    from beartools.codex import _stream_codex_events
+
+    async def collect_events() -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        async for event in _stream_codex_events("hello"):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect_events())
+
+    del events
+    tools = cast(list[object], captured["tools"])
+    tool_classes = {tool.__class__.__name__ for tool in tools}
+    assert "WebSearchTool" in tool_classes
+    assert "ShellTool" in tool_classes
