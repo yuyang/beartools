@@ -18,7 +18,7 @@ DEFAULT_TARGETS: list[str] = [
     "https://www.google.com/generate_204",
     "https://www.youtube.com/",
     "https://www.facebook.com/",
-    "https://x.com/",
+    "https://www.wikipedia.org/",
     "https://www.instagram.com/",
     "https://www.baidu.com/",
 ]
@@ -42,8 +42,8 @@ def _label_for_target(target: str) -> str:
         return "youtube"
     if "facebook.com" in target:
         return "facebook"
-    if "x.com" in target:
-        return "x"
+    if "wikipedia.org" in target:
+        return "wikipedia"
     if "instagram.com" in target:
         return "instagram"
     if "baidu.com" in target:

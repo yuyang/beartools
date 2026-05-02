@@ -195,7 +195,7 @@ class TestGooglePingCheck:
                 "google: 成功 200",
                 "youtube: 成功 200",
                 "facebook: 连接失败",
-                "x: 连接失败",
+                "wikipedia: 连接失败",
                 "instagram: 连接失败",
                 "baidu: 连接失败",
             ]
@@ -210,7 +210,7 @@ class TestGooglePingCheck:
                 "https://www.google.com/generate_204": module._TargetCheckResult("google", True, "成功 204"),
                 "https://www.youtube.com/": module._TargetCheckResult("youtube", True, "成功 200"),
                 "https://www.facebook.com/": module._TargetCheckResult("facebook", True, "成功 200"),
-                "https://x.com/": module._TargetCheckResult("x", False, "超时"),
+                "https://www.wikipedia.org/": module._TargetCheckResult("wikipedia", False, "超时"),
                 "https://www.instagram.com/": module._TargetCheckResult("instagram", False, "连接失败"),
                 "https://www.baidu.com/": module._TargetCheckResult("baidu", False, "连接失败"),
             }
@@ -242,7 +242,7 @@ class TestGooglePingCheck:
                 "google: 成功 204",
                 "youtube: 成功 200",
                 "facebook: 成功 200",
-                "x: 超时",
+                "wikipedia: 超时",
                 "instagram: 连接失败",
                 "baidu: 连接失败",
             ]
@@ -257,7 +257,7 @@ class TestGooglePingCheck:
                 "https://www.google.com/generate_204": module._TargetCheckResult("google", True, "成功 204"),
                 "https://www.youtube.com/": module._TargetCheckResult("youtube", True, "成功 200"),
                 "https://www.facebook.com/": module._TargetCheckResult("facebook", False, "DNS 解析失败"),
-                "https://x.com/": module._TargetCheckResult("x", False, "超时"),
+                "https://www.wikipedia.org/": module._TargetCheckResult("wikipedia", False, "超时"),
                 "https://www.instagram.com/": module._TargetCheckResult("instagram", False, "连接失败"),
                 "https://www.baidu.com/": module._TargetCheckResult("baidu", False, "连接失败"),
             }
@@ -289,7 +289,7 @@ class TestGooglePingCheck:
                 "google: 成功 204",
                 "youtube: 成功 200",
                 "facebook: DNS 解析失败",
-                "x: 超时",
+                "wikipedia: 超时",
                 "instagram: 连接失败",
                 "baidu: 连接失败",
             ]
@@ -301,7 +301,7 @@ class TestGooglePingCheck:
         assert module._label_for_target("https://www.google.com/generate_204") == "google"
         assert module._label_for_target("https://www.youtube.com/") == "youtube"
         assert module._label_for_target("https://www.facebook.com/") == "facebook"
-        assert module._label_for_target("https://x.com/") == "x"
+        assert module._label_for_target("https://www.wikipedia.org/") == "wikipedia"
         assert module._label_for_target("https://www.instagram.com/") == "instagram"
         assert module._label_for_target("https://www.baidu.com/") == "baidu"
 
@@ -401,9 +401,9 @@ class TestGooglePingCheck:
                 assert kwargs == {"ssl": True}
                 return FakeRequestContext(self._func)
 
-        connection_result = await check._check_target(FakeSession(raise_connection), "https://x.com/", 2)
+        connection_result = await check._check_target(FakeSession(raise_connection), "https://www.wikipedia.org/", 2)
 
-        assert connection_result == module._TargetCheckResult(label="x", ok=False, summary="连接失败")
+        assert connection_result == module._TargetCheckResult(label="wikipedia", ok=False, summary="连接失败")
 
     @pytest.mark.asyncio
     async def test_run_preserves_target_order_and_uses_concurrent_requests(self, monkeypatch) -> None:
