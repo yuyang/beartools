@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Protocol, TypeGuard, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from agents import ShellTool, Tool, WebSearchTool
 from agents.tool import ShellCallOutcome, ShellCommandOutput, ShellCommandRequest, ShellResult
@@ -16,6 +16,18 @@ from rich.console import Console
 
 from beartools.config import CodexConfig, get_config
 from beartools.logger import get_logger
+
+if TYPE_CHECKING:
+    from agents.items import ReasoningItem, ToolCallItem, ToolCallOutputItem
+    from agents.result import RunResultStreaming
+    from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
+
+    type _OfficialToolEventItem = ReasoningItem | ToolCallItem | ToolCallOutputItem
+else:
+    type _OfficialToolEventItem = object
+    type RunResultStreaming = object
+    type RawResponsesStreamEvent = object
+    type RunItemStreamEvent = object
 
 console = Console()
 logger = get_logger(__name__)
@@ -30,64 +42,25 @@ class CodexRunResult:
     final_text: str
 
 
-class _CommunicateResult(Protocol):
-    def __await__(self) -> object: ...
+@dataclass
+class _InternalRunResult:
+    """内部运行结果，统一承载事件流和最终文本。"""
+
+    events: AsyncIterator[_CodexStreamEvent]
+    final_text: str
 
 
-class _HasData(Protocol):
-    data: object
-
-
-class _HasItem(Protocol):
-    item: object
-
-
-class _HasName(Protocol):
-    name: object
-
-
-class _HasRawItem(Protocol):
-    raw_item: object
-
-
-class _HasOutput(Protocol):
-    output: object
-
-
-class _HasDelta(Protocol):
-    delta: object
-
-
-class _HasEventType(Protocol):
-    type: object
-
-
-def _has_data(value: object) -> TypeGuard[_HasData]:
-    return hasattr(value, "data")
-
-
-def _has_item(value: object) -> TypeGuard[_HasItem]:
-    return hasattr(value, "item")
-
-
-def _has_name(value: object) -> TypeGuard[_HasName]:
-    return hasattr(value, "name")
-
-
-def _has_raw_item(value: object) -> TypeGuard[_HasRawItem]:
-    return hasattr(value, "raw_item")
-
-
-def _has_output(value: object) -> TypeGuard[_HasOutput]:
-    return hasattr(value, "output")
-
-
-def _has_delta(value: object) -> TypeGuard[_HasDelta]:
-    return hasattr(value, "delta")
-
-
-def _has_event_type(value: object) -> TypeGuard[_HasEventType]:
-    return hasattr(value, "type")
+@dataclass(frozen=True)
+class _CodexStreamEvent:
+    type: Literal[
+        "response.output_text.delta",
+        "tool_called",
+        "tool_output",
+        "reasoning_item_created",
+        "unknown_event",
+    ]
+    message: str
+    display_text: str = ""
 
 
 def _require_codex_config(config: CodexConfig) -> None:
@@ -113,101 +86,65 @@ def _resolve_output_paths(
     return final_output_file, trace_output_file
 
 
-def _map_to_json(m: Mapping[str, object]) -> str:
-    """把 Mapping 转为 JSON 字符串，保证键为 str。"""
-    safe_map: dict[str, object] = {str(k): v for k, v in m.items()}
-    return json.dumps(safe_map, ensure_ascii=False)
+def _extract_event_type(event: object) -> str:
+    """尽量从原始事件中提取事件类型。"""
 
-
-def _normalize_obj(obj: object) -> dict[str, object]:
-    """把常见的 stream event 对象转换为简单 dict 表示。"""
-    normalized: dict[str, object] = {}
-    if _has_event_type(obj):
-        normalized["type"] = str(obj.type)
-    if _has_data(obj):
-        normalized["data"] = str(obj.data)
-    if _has_item(obj):
-        itm = obj.item
-        if isinstance(itm, Mapping):
-            # 将 Mapping 映射为 dict[str, object]，避免 mypy 将 key/value 推断为 Any
-            normalized["item"] = {str(key): value for key, value in cast(Mapping[str, object], itm).items()}
-        else:
-            normalized["item"] = str(itm)
-    if _has_raw_item(obj):
-        normalized["raw_item"] = str(obj.raw_item)
-    if _has_output(obj):
-        normalized["output"] = str(obj.output)
-    if _has_delta(obj):
-        normalized["delta"] = str(obj.delta)
-    if _has_name(obj):
-        normalized["name"] = str(obj.name)
-    return normalized
-
-
-def _normalize_mapping(mapping: Mapping[str, object]) -> dict[str, object]:
-    """显式把 Mapping 规范化为 dict[str, object]。"""
-
-    return {str(key): value for key, value in mapping.items()}
-
-
-def _item_tool_called_name(it: object) -> str | None:
-    """从 item 上提取工具名（兼容旧协议）。"""
-    item_type = str(it.type) if _has_event_type(it) else ""
-    if item_type != "tool_call_item":
-        return None
-    name = "tool"
-    if _has_raw_item(it):
-        raw = it.raw_item
-        if _has_name(raw):
-            return str(raw.name)
-        if _has_event_type(raw):
-            return str(raw.type)
-    if _has_event_type(it):
-        return str(it.type)
-    return name
-
-
-def _serialize_event(event: object) -> str:
-    try:
-        if isinstance(event, Mapping):
-            return _map_to_json(cast(Mapping[str, object], event))
-        return json.dumps(event, ensure_ascii=False)
-    except TypeError:
-        # 抽离规范化逻辑到独立函数以降低复杂度
-        try:
-            normalized = _serialize_event_normalize(event)
-        except Exception:
-            fallback_event: dict[str, object] = {"raw": str(event)}
-            return json.dumps(fallback_event, ensure_ascii=False)
-
-        return json.dumps(normalized, ensure_ascii=False)
-
-
-def _serialize_event_normalize(event: object) -> dict[str, object]:
-    """把 event 规范化为 dict[str, object]，用于 _serialize_event 的兜底分支。"""
     if isinstance(event, Mapping):
-        return _normalize_mapping(cast(Mapping[str, object], event))
+        event_type = cast(Mapping[str, object], event).get("type")
+        if event_type is not None:
+            return str(event_type)
+    event_type = _safe_getattr(event, "type")
+    if event_type is not None:
+        return str(event_type)
+    return type(event).__name__
+
+
+def _safe_getattr(obj: object, attr: str) -> object | None:
+    """用 object 结果收敛 getattr 返回值，避免 Any 外溢。"""
+
+    return cast(object | None, getattr(obj, attr, None))
+
+
+def _stream_final_text(stream: RunResultStreaming) -> str:
+    """显式收敛官方 stream.final_output 的类型。"""
+
+    final_output = _safe_getattr(stream, "final_output")
+    return "" if final_output is None else str(final_output)
+
+
+def _to_safe_jsonable(value: object) -> object:
+    """尽量把对象转成安全可序列化的结构。"""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _to_safe_jsonable(item) for key, item in cast(Mapping[str, object], value).items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_safe_jsonable(item) for item in value]
 
     normalized: dict[str, object] = {}
-    if _has_event_type(event):
-        normalized["type"] = str(event.type)
-    if _has_data(event):
-        normalized["data"] = str(event.data)
-    if _has_item(event):
-        itm = event.item
-        if isinstance(itm, Mapping):
-            normalized["item"] = {str(k): v for k, v in cast(Mapping[str, object], itm).items()}
-        else:
-            normalized["item"] = str(itm)
-    if _has_raw_item(event):
-        normalized["raw_item"] = str(event.raw_item)
-    if _has_output(event):
-        normalized["output"] = str(event.output)
-    if _has_delta(event):
-        normalized["delta"] = str(event.delta)
-    if _has_name(event):
-        normalized["name"] = str(event.name)
-    return normalized
+    value_type = _safe_getattr(value, "type")
+    if value_type is not None:
+        normalized["type"] = str(value_type)
+    value_name = _safe_getattr(value, "name")
+    if value_name is not None:
+        normalized["name"] = str(value_name)
+    if normalized:
+        return {key: _to_safe_jsonable(item) for key, item in normalized.items()}
+    return str(value)
+
+
+def _build_unknown_event(event: object) -> _CodexStreamEvent:
+    """把无法识别的事件统一转换为 unknown_event。"""
+
+    event_type = _extract_event_type(event)
+    raw = _to_safe_jsonable(event)
+    return _CodexStreamEvent(type="unknown_event", message=f"{event_type}: {raw}")
+
+
+def _serialize_event(event: _CodexStreamEvent) -> str:
+    payload: dict[str, str] = {"type": event.type, "message": event.message, "display_text": event.display_text}
+    return json.dumps(payload, ensure_ascii=False)
 
 
 async def _execute_shell_commands(commands: list[str], timeout_seconds: int) -> ShellResult:
@@ -245,15 +182,12 @@ async def _execute_shell_commands(commands: list[str], timeout_seconds: int) -> 
 
 
 async def _communicate_process(
-    communicate_result: Awaitable[tuple[bytes, bytes]] | _CommunicateResult,
+    communicate_result: Awaitable[tuple[bytes, bytes]],
     timeout_seconds: int,
 ) -> tuple[bytes, bytes]:
     """为 subprocess communicate 返回值补充静态类型。"""
 
-    return cast(
-        tuple[bytes, bytes],
-        await asyncio.wait_for(communicate_result, timeout=timeout_seconds),  # type: ignore[arg-type,misc]
-    )
+    return await asyncio.wait_for(communicate_result, timeout=timeout_seconds)
 
 
 async def _shell_tool_executor(request: ShellCommandRequest) -> str | ShellResult:
@@ -270,74 +204,27 @@ def _build_codex_tools() -> list[Tool]:
     return [WebSearchTool(), ShellTool(executor=_shell_tool_executor)]
 
 
-def _extract_official_stream_event(event: object) -> dict[str, object] | None:
-    """优先解析官方 stream event / item 类型。"""
+def _resolve_official_tool_name(event_item: _OfficialToolEventItem) -> str:
+    """尽量从官方工具调用事件里提取工具名。"""
 
+    raw = _safe_getattr(event_item, "raw_item")
+    if raw is not None:
+        raw_name = _safe_getattr(raw, "name")
+        if raw_name is not None:
+            return str(raw_name)
+        raw_type = _safe_getattr(raw, "type")
+        if raw_type is not None:
+            return str(raw_type)
+    item_type = _safe_getattr(event_item, "type")
+    if item_type is not None:
+        return str(item_type)
+    return "tool"
+
+
+async def _run_codex_stream(prompt: str) -> _InternalRunResult:
+    from agents import Agent, OpenAIResponsesModel, Runner, set_tracing_disabled
     from agents.items import ReasoningItem, ToolCallItem, ToolCallOutputItem
     from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
-    from openai.types.responses import ResponseTextDeltaEvent
-
-    if isinstance(event, RawResponsesStreamEvent) and isinstance(event.data, ResponseTextDeltaEvent):  # type: ignore[misc]
-        return {"type": "response.output_text.delta", "delta": str(event.data.delta)}
-
-    if not isinstance(event, RunItemStreamEvent):
-        return None
-
-    if isinstance(event.item, ToolCallItem):  # type: ignore[misc]
-        # 尽量从官方 raw_item 中提取真实工具名，优先顺序：raw_item.name -> raw_item.type -> item.type -> "tool"
-        tool_name = "tool"
-        if _has_raw_item(event.item):
-            raw = event.item.raw_item
-            if _has_name(raw):
-                tool_name = str(raw.name)
-            elif _has_event_type(raw):
-                tool_name = str(raw.type)
-        elif _has_event_type(event.item):
-            tool_name = str(event.item.type)
-        return {"type": "tool_called", "name": tool_name}
-
-    if isinstance(event.item, ToolCallOutputItem):  # type: ignore[misc]
-        tool_output = cast(object, event.item.output)
-        return {"type": "tool_output", "output": str(tool_output)}
-
-    if isinstance(event.item, ReasoningItem):  # type: ignore[misc]
-        return {"type": "reasoning_item_created", "text": str(event.item.raw_item)}
-
-    return None
-
-
-def _extract_fallback_stream_event(event: object) -> dict[str, object] | None:
-    """兼容旧的字符串协议事件。"""
-    # 简化为调用子函数以降低复杂度，行为保持不变
-    if not _has_event_type(event):
-        return None
-
-    # raw_response_event 分支
-    if _has_event_type(event) and str(event.type) == "raw_response_event":
-        if _has_data(event) and _has_delta(event.data):
-            return {"type": "response.output_text.delta", "delta": str(event.data.delta)}
-        return None
-
-    # run_item_stream_event 及其子分支
-    if str(event.type) != "run_item_stream_event" or not _has_item(event):
-        return None
-
-    item = event.item
-    tool_name = _item_tool_called_name(item)
-    if tool_name is not None:
-        return {"type": "tool_called", "name": tool_name}
-
-    if _has_event_type(item) and str(item.type) == "tool_call_output_item" and _has_output(item):
-        return {"type": "tool_output", "output": str(item.output)}
-
-    if _has_name(event) and str(event.name) == "reasoning_item_created":
-        return {"type": "reasoning_item_created", "text": str(item)}
-
-    return None
-
-
-async def _stream_codex_events(prompt: str) -> AsyncIterator[dict[str, object]]:
-    from agents import Agent, OpenAIResponsesModel, Runner, set_tracing_disabled
     from openai import AsyncOpenAI
 
     config = get_config().codex
@@ -352,18 +239,47 @@ async def _stream_codex_events(prompt: str) -> AsyncIterator[dict[str, object]]:
         model=model,
         tools=_build_codex_tools(),
     )  # type: ignore[misc]
-    result = Runner.run_streamed(agent, input=prompt)  # type: ignore[misc]
-    stream_events = result.stream_events
+    stream = Runner.run_streamed(agent, input=prompt)  # type: ignore[misc]
 
-    async for event in stream_events():
-        official_event = _extract_official_stream_event(event)
-        if official_event is not None:
-            yield official_event
-            continue
+    async def _iter_events() -> AsyncIterator[_CodexStreamEvent]:
+        try:
+            async for event in stream.stream_events():
+                if (
+                    isinstance(event, RawResponsesStreamEvent)
+                    and _safe_getattr(event.data, "type") == "response.output_text.delta"
+                ):
+                    delta = str(_safe_getattr(event.data, "delta") or "")
+                    yield _CodexStreamEvent(type="response.output_text.delta", message=delta, display_text=delta)
+                    continue
 
-        fallback_event = _extract_fallback_stream_event(event)
-        if fallback_event is not None:
-            yield fallback_event
+                if isinstance(event, RunItemStreamEvent):
+                    item = event.item
+                    if isinstance(item, ToolCallItem):  # type: ignore[misc]
+                        tool_name = _resolve_official_tool_name(item)
+                        yield _CodexStreamEvent(
+                            type="tool_called", message=tool_name, display_text=f"[tool:start] {tool_name}"
+                        )
+                        continue
+                    if isinstance(item, ToolCallOutputItem):  # type: ignore[misc]
+                        output = str(_safe_getattr(item, "output") or "")
+                        yield _CodexStreamEvent(
+                            type="tool_output", message=output, display_text=f"[tool:output] {output}"
+                        )
+                        continue
+                    if isinstance(item, ReasoningItem):  # type: ignore[misc]
+                        text = str(_safe_getattr(item, "raw_item") or "")
+                        yield _CodexStreamEvent(
+                            type="reasoning_item_created", message=text, display_text=f"[thinking] {text}"
+                        )
+                        continue
+
+                yield _build_unknown_event(event)
+        except Exception as exc:
+            # 事件流仅用于记录，不应影响最终输出。
+            yield _CodexStreamEvent(type="unknown_event", message=f"stream_error: {exc}")
+
+    final_text = _stream_final_text(stream)
+    return _InternalRunResult(events=_iter_events(), final_text=final_text)
 
 
 async def run_codex_markdown_async(
@@ -384,38 +300,26 @@ async def run_codex_markdown_async(
 
     logger.info("开始执行 Codex: md_path=%s model=%s", md_path, config.model)
 
-    final_text_parts: list[str] = []
+    run = _InternalRunResult(events=_empty_event_iterator(), final_text="")
     with trace_output_file.open("w", encoding="utf-8") as trace_handle:
         try:
-            async for event in _stream_codex_events(prompt):
+            run = await _run_codex_stream(prompt)
+            async for event in run.events:
                 serialized_event = _serialize_event(event)
                 trace_handle.write(serialized_event + "\n")
                 trace_handle.flush()
                 logger.info("Codex stream event: %s", serialized_event)
-
-                event_type = str(event.get("type", ""))
-                if event_type == "reasoning_item_created":
-                    text = str(event.get("text", ""))
-                    console.print(f"[thinking] {text}")
-                elif event_type == "tool_called":
-                    tool_name = str(event.get("name", "tool"))
-                    console.print(f"[tool:start] {tool_name}")
-                elif event_type == "tool_output":
-                    output = str(event.get("output", ""))
-                    console.print(f"[tool:output] {output}")
-                elif event_type == "response.output_text.delta":
-                    delta = str(event.get("delta", ""))
-                    final_text_parts.append(delta)
-                    console.print(delta, end="")
+                if event.display_text:
+                    end = "" if event.type == "response.output_text.delta" else "\n"
+                    console.print(event.display_text, end=end)
         except Exception as exc:
-            partial_text = "".join(final_text_parts)
-            final_output_file.write_text(f"[未完成]\n\n{partial_text}", encoding="utf-8")
-            error_event = {"type": "error", "message": str(exc)}
-            trace_handle.write(_serialize_event(error_event) + "\n")
-            logger.error("Codex 执行失败: %s", exc)
-            raise RuntimeError(f"Codex 执行失败: {exc}") from exc
+            stream_error_event = _CodexStreamEvent(type="unknown_event", message=f"stream_error: {exc}")
+            serialized_event = _serialize_event(stream_error_event)
+            trace_handle.write(serialized_event + "\n")
+            trace_handle.flush()
+            logger.warning("Codex 事件流记录异常，忽略并继续输出最终结果: %s", exc)
 
-    final_text = "".join(final_text_parts)
+    final_text = run.final_text
     final_output_file.write_text(final_text, encoding="utf-8")
     logger.info("Codex 执行完成: final_output=%s trace_output=%s", final_output_file, trace_output_file)
     return CodexRunResult(
@@ -427,3 +331,10 @@ def run_codex_markdown(*, md_path: Path, output_file: Path | None, trace_file: P
     """同步执行 Codex Markdown 任务。"""
 
     return asyncio.run(run_codex_markdown_async(md_path=md_path, output_file=output_file, trace_file=trace_file))
+
+
+async def _empty_event_iterator() -> AsyncIterator[_CodexStreamEvent]:
+    """为异常兜底提供空事件流。"""
+
+    if False:
+        yield {}
