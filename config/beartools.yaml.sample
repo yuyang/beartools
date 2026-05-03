@@ -91,6 +91,7 @@ gmail:
 # Codex 配置
 codex:
   base_url: "https://codex.example.com"
+  api_key: "REPLACE_ME_CODEX_API_KEY"
   model: "codex-mini-latest"
   instructions: "你是 Codex 助手"
   output_dir: "output/codex"

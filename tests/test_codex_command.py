@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
-from agents import RunContextWrapper
+from agents import Agent, RunContextWrapper
+from agents.items import ReasoningItem, ToolCallItem, ToolCallOutputItem
+from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
 from agents.tool import ShellActionRequest, ShellCallData, ShellCommandRequest
+from openai.types.responses import ResponseTextDeltaEvent
+from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 import pytest
 from typer.testing import CliRunner
 
@@ -17,6 +23,15 @@ from beartools.cli import app
 from beartools.config import CodexConfig, Config
 
 runner = CliRunner()
+
+
+@dataclass
+class _FakeRunAgent:
+    """测试用的弱引用友好 agent 占位对象。"""
+
+
+_EMPTY_LOGPROBS: list[object] = []
+_REASONING_SUMMARY: list[dict[str, str]] = [{"text": "思考中", "type": "summary_text"}]
 
 
 def _build_fake_codex_config() -> Config:
@@ -48,18 +63,20 @@ def _patch_codex_stream_dependencies(monkeypatch: pytest.MonkeyPatch, captured: 
 
     class FakeModel:
         def __init__(self, *args: object, **kwargs: object) -> None:
-            del args, kwargs
+            del args
+            captured["model_kwargs"] = kwargs
 
     class FakeClient:
         def __init__(self, *args: object, **kwargs: object) -> None:
             del args, kwargs
+            captured["client"] = self
 
     def fake_set_tracing_disabled(_value: bool) -> None:
         return None
 
     monkeypatch.setattr("agents.Agent", FakeAgent)
     monkeypatch.setattr("agents.Runner", FakeRunner)
-    monkeypatch.setattr("agents.OpenAIChatCompletionsModel", FakeModel)
+    monkeypatch.setattr("agents.OpenAIResponsesModel", FakeModel)
     monkeypatch.setattr("agents.set_tracing_disabled", fake_set_tracing_disabled)
     monkeypatch.setattr("openai.AsyncOpenAI", FakeClient)
     monkeypatch.setattr("beartools.codex.get_config", _build_fake_codex_config)
@@ -215,7 +232,9 @@ def test_shell_tool_executor_uses_request_commands(monkeypatch: pytest.MonkeyPat
     assert result == "done"
 
 
-def test_stream_codex_events_builds_agent_with_websearch_and_shell(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stream_codex_events_builds_agent_with_responses_model_and_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, object] = {}
     _patch_codex_stream_dependencies(monkeypatch, captured)
 
@@ -230,7 +249,99 @@ def test_stream_codex_events_builds_agent_with_websearch_and_shell(monkeypatch: 
     events = asyncio.run(collect_events())
 
     del events
+    assert captured["model_kwargs"] == {"model": "demo-model", "openai_client": captured["client"]}
     tools = cast(list[object], captured["tools"])
     tool_classes = {tool.__class__.__name__ for tool in tools}
     assert "WebSearchTool" in tool_classes
     assert "ShellTool" in tool_classes
+
+
+def test_stream_codex_events_consumes_official_response_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    _patch_codex_stream_dependencies(monkeypatch, captured)
+
+    from beartools.codex import _stream_codex_events
+
+    fake_run_agent = cast(Agent[object], _FakeRunAgent())
+
+    raw_text_event = RawResponsesStreamEvent(
+        data=ResponseTextDeltaEvent(
+            content_index=0,
+            delta="最终回答",
+            item_id="msg_1",
+            logprobs=_EMPTY_LOGPROBS,
+            output_index=0,
+            sequence_number=1,
+            type="response.output_text.delta",
+        )
+    )
+    tool_call_event = RunItemStreamEvent(
+        name="tool_called",
+        item=ToolCallItem(
+            agent=fake_run_agent,
+            raw_item=ResponseFunctionToolCall(
+                arguments='{"query": "harry potter"}',
+                call_id="call_1",
+                name="web_search",
+                type="function_call",
+                id="fc_1",
+                status="completed",
+            ),
+        ),
+    )
+    tool_output_event = RunItemStreamEvent(
+        name="tool_output",
+        item=ToolCallOutputItem(
+            agent=fake_run_agent,
+            raw_item={"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+            output='{"stdout": "ok"}',
+        ),
+    )
+    reasoning_event = RunItemStreamEvent(
+        name="reasoning_item_created",
+        item=ReasoningItem(
+            agent=fake_run_agent,
+            raw_item=ResponseReasoningItem(
+                id="rs_1",
+                summary=_REASONING_SUMMARY,
+                type="reasoning",
+                content=None,
+                encrypted_content=None,
+                status=None,
+            ),
+        ),
+    )
+
+    class FakeResult:
+        def stream_events(self) -> AsyncIterator[object]:
+            async def _events() -> AsyncIterator[object]:
+                yield reasoning_event
+                yield tool_call_event
+                yield tool_output_event
+                yield raw_text_event
+
+            return _events()
+
+    class FakeRunner:
+        @staticmethod
+        def run_streamed(agent: object, input: str) -> FakeResult:
+            captured["runner_agent"] = agent
+            captured["input"] = input
+            return FakeResult()
+
+    monkeypatch.setattr("agents.Runner", FakeRunner)
+
+    async def collect_events() -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        async for event in _stream_codex_events("hello"):
+            events.append(event)
+        return events
+
+    events = asyncio.run(collect_events())
+
+    assert events == [
+        {"type": "reasoning_item_created", "text": str(reasoning_event.item.raw_item)},
+        {"type": "tool_called", "name": "web_search"},
+        {"type": "tool_output", "output": '{"stdout": "ok"}'},
+        {"type": "response.output_text.delta", "delta": "最终回答"},
+    ]

@@ -218,3 +218,7 @@ log/
 email/
 
 data/
+
+# Codex 本地产物
+input/*.md
+output/*
