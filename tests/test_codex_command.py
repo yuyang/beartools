@@ -20,7 +20,7 @@ import pytest
 from typer.testing import CliRunner
 
 from beartools.cli import app
-from beartools.codex import run_codex_markdown_async
+from beartools.codex import _normalize_stream_event, run_codex_markdown_async
 from beartools.config import CodexConfig, Config
 
 runner = CliRunner()
@@ -33,6 +33,25 @@ class _FakeRunAgent:
 
 _EMPTY_LOGPROBS: list[object] = []
 _REASONING_SUMMARY: list[dict[str, str]] = [{"text": "思考中", "type": "summary_text"}]
+
+
+@dataclass
+class _FakeStreamRunResult:
+    """测试用的最小 run_streamed 结果替身。"""
+
+    events: AsyncIterator[object]
+    final_output: object | None = None
+
+    def stream_events(self) -> AsyncIterator[object]:
+        return self.events
+
+
+def _build_fake_stream_result(
+    *, events: AsyncIterator[object], final_output: object | None = None
+) -> _FakeStreamRunResult:
+    """构造更贴近官方 stream 的测试对象。"""
+
+    return _FakeStreamRunResult(events=events, final_output=final_output)
 
 
 def _build_fake_codex_config() -> Config:
@@ -134,7 +153,7 @@ def test_run_codex_markdown_streams_events_and_writes_outputs(tmp_path: Path, mo
         def error(self, message: str, *args: object) -> None:
             self.messages.append(message % args if args else message)
 
-    from beartools.codex import _CodexStreamEvent, _InternalRunResult
+    from beartools.codex import _CodexStreamEvent
 
     fake_events = [
         _CodexStreamEvent(type="reasoning_item_created", message="思考中", display_text="[thinking] 思考中"),
@@ -148,17 +167,18 @@ def test_run_codex_markdown_streams_events_and_writes_outputs(tmp_path: Path, mo
         _CodexStreamEvent(type="unknown_event", message="turn.completed", display_text=""),
     ]
 
-    async def fake_stream_events() -> AsyncIterator[_CodexStreamEvent]:
+    async def fake_stream_events() -> AsyncIterator[object]:
         for event in fake_events:
             yield event
 
-    async def fake_run_codex_stream(prompt: str) -> _InternalRunResult:
+    async def fake_run_codex_stream(prompt: str) -> _FakeStreamRunResult:
         assert prompt == "请执行"
-        return _InternalRunResult(events=fake_stream_events(), final_text="最终回答")
+        return _build_fake_stream_result(events=fake_stream_events(), final_output="最终回答")
 
     from beartools.codex import run_codex_markdown_async
 
     monkeypatch.setattr("beartools.codex._run_codex_stream", fake_run_codex_stream)
+    monkeypatch.setattr("beartools.codex._normalize_stream_event", lambda event: cast(_CodexStreamEvent, event))
     monkeypatch.setattr("beartools.codex.console", FakeConsole())
     monkeypatch.setattr("beartools.codex.logger", FakeLogger())
 
@@ -254,10 +274,10 @@ def test_stream_codex_events_builds_agent_with_responses_model_and_tools(
     from beartools.codex import _run_codex_stream
 
     async def collect_events() -> list[object]:
-        run = await _run_codex_stream("hello")
+        stream = await _run_codex_stream("hello")
         events: list[object] = []
-        async for event in run.events:
-            events.append(event)
+        async for event in stream.stream_events():
+            events.append(_normalize_stream_event(event))
         return events
 
     events = asyncio.run(collect_events())
@@ -277,10 +297,10 @@ def test_run_codex_stream_disables_official_tracing(monkeypatch: pytest.MonkeyPa
     from beartools.codex import _run_codex_stream
 
     async def collect() -> str:
-        run = await _run_codex_stream("hello")
-        async for _event in run.events:
+        stream = await _run_codex_stream("hello")
+        async for _event in stream.stream_events():
             pass
-        return run.final_text
+        return "" if stream.final_output is None else str(stream.final_output)
 
     final_text = asyncio.run(collect())
 
@@ -327,11 +347,12 @@ def test_stream_codex_events_returns_final_output_and_unknown_events(
     monkeypatch.setattr("agents.Runner", FakeRunner)
 
     async def collect() -> tuple[list[object], str]:
-        run = await _run_codex_stream("hello")
+        stream = await _run_codex_stream("hello")
         events: list[object] = []
-        async for event in run.events:
-            events.append(event)
-        return events, run.final_text
+        async for event in stream.stream_events():
+            events.append(_normalize_stream_event(event))
+        final_text = "" if stream.final_output is None else str(stream.final_output)
+        return events, final_text
 
     events, final_text = asyncio.run(collect())
 
@@ -369,12 +390,47 @@ def test_run_codex_stream_uses_final_output_directly(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("agents.Runner", FakeRunner)
 
     async def collect() -> str:
-        run = await _run_codex_stream("hello")
-        async for _event in run.events:
+        stream = await _run_codex_stream("hello")
+        async for _event in stream.stream_events():
             pass
-        return run.final_text
+        return "" if stream.final_output is None else str(stream.final_output)
 
     assert asyncio.run(collect()) == "直接最终结果"
+
+
+def test_run_codex_stream_reads_final_output_after_events_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    _patch_codex_stream_dependencies(monkeypatch, captured)
+
+    from beartools.codex import _run_codex_stream
+
+    class FakeResult:
+        def __init__(self) -> None:
+            self.final_output: str | None = None
+
+        def stream_events(self) -> AsyncIterator[object]:
+            async def _events() -> AsyncIterator[object]:
+                yield object()
+                self.final_output = "事件结束后的最终结果"
+
+            return _events()
+
+    class FakeRunner:
+        @staticmethod
+        def run_streamed(agent: object, input: str) -> FakeResult:
+            captured["runner_agent"] = agent
+            captured["input"] = input
+            return FakeResult()
+
+    monkeypatch.setattr("agents.Runner", FakeRunner)
+
+    async def collect() -> str:
+        stream = await _run_codex_stream("hello")
+        async for _event in stream.stream_events():
+            pass
+        return "" if stream.final_output is None else str(stream.final_output)
+
+    assert asyncio.run(collect()) == "事件结束后的最终结果"
 
 
 def test_stream_codex_events_consumes_official_response_events(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -455,11 +511,12 @@ def test_stream_codex_events_consumes_official_response_events(monkeypatch: pyte
     monkeypatch.setattr("agents.Runner", FakeRunner)
 
     async def collect_events() -> tuple[list[object], str]:
-        run = await _run_codex_stream("hello")
+        stream = await _run_codex_stream("hello")
         events: list[object] = []
-        async for event in run.events:
-            events.append(event)
-        return events, run.final_text
+        async for event in stream.stream_events():
+            events.append(_normalize_stream_event(event))
+        final_text = "" if stream.final_output is None else str(stream.final_output)
+        return events, final_text
 
     events, final_text = asyncio.run(collect_events())
 
@@ -495,17 +552,18 @@ def test_run_codex_markdown_recovers_on_exception_when_partial_delta(
         def info(self, message: str, *args: object) -> None:
             self.messages.append(message % args if args else message)
 
-    from beartools.codex import _CodexStreamEvent, _InternalRunResult
+    from beartools.codex import _CodexStreamEvent
 
-    async def fake_stream() -> AsyncIterator[_CodexStreamEvent]:
+    async def fake_stream() -> AsyncIterator[object]:
         yield _CodexStreamEvent(type="response.output_text.delta", message="部分回答", display_text="部分回答")
         raise RuntimeError("socket error")
 
-    async def fake_run_codex_stream(prompt: str) -> _InternalRunResult:
+    async def fake_run_codex_stream(prompt: str) -> _FakeStreamRunResult:
         assert prompt == "请执行"
-        return _InternalRunResult(events=fake_stream(), final_text="部分回答")
+        return _build_fake_stream_result(events=fake_stream(), final_output="部分回答")
 
     monkeypatch.setattr("beartools.codex._run_codex_stream", fake_run_codex_stream)
+    monkeypatch.setattr("beartools.codex._normalize_stream_event", lambda event: cast(_CodexStreamEvent, event))
     monkeypatch.setattr("beartools.codex.logger", FakeLogger())
 
     result = asyncio.run(run_codex_markdown_async(md_file, None, None))
@@ -524,18 +582,19 @@ def test_run_codex_markdown_recovers_on_exception_without_any_delta(
     md_file = tmp_path / "prompt.md"
     md_file.write_text("请执行", encoding="utf-8")
 
-    from beartools.codex import _CodexStreamEvent, _InternalRunResult
+    from beartools.codex import _CodexStreamEvent
 
-    async def fake_stream() -> AsyncIterator[_CodexStreamEvent]:
+    async def fake_stream() -> AsyncIterator[object]:
         if False:
             yield _CodexStreamEvent(type="unknown_event", message="noop")
         raise RuntimeError("connection lost")
 
-    async def fake_run_codex_stream(prompt: str) -> _InternalRunResult:
+    async def fake_run_codex_stream(prompt: str) -> _FakeStreamRunResult:
         assert prompt == "请执行"
-        return _InternalRunResult(events=fake_stream(), final_text="")
+        return _build_fake_stream_result(events=fake_stream(), final_output="")
 
     monkeypatch.setattr("beartools.codex._run_codex_stream", fake_run_codex_stream)
+    monkeypatch.setattr("beartools.codex._normalize_stream_event", lambda event: cast(_CodexStreamEvent, event))
 
     result = asyncio.run(run_codex_markdown_async(md_file, None, None))
 
@@ -563,17 +622,18 @@ def test_run_codex_markdown_recovers_when_non_delta_event_precedes_final_respons
         def error(self, message: str, *args: object) -> None:
             del message, args
 
-    from beartools.codex import _CodexStreamEvent, _InternalRunResult
+    from beartools.codex import _CodexStreamEvent
 
-    async def fake_stream() -> AsyncIterator[_CodexStreamEvent]:
+    async def fake_stream() -> AsyncIterator[object]:
         yield _CodexStreamEvent(type="tool_called", message="shell", display_text="[tool:start] shell")
         raise RuntimeError("Model did not produce a final response!")
 
-    async def fake_run_codex_stream(prompt: str) -> _InternalRunResult:
+    async def fake_run_codex_stream(prompt: str) -> _FakeStreamRunResult:
         assert prompt == "请执行"
-        return _InternalRunResult(events=fake_stream(), final_text="")
+        return _build_fake_stream_result(events=fake_stream(), final_output="")
 
     monkeypatch.setattr("beartools.codex._run_codex_stream", fake_run_codex_stream)
+    monkeypatch.setattr("beartools.codex._normalize_stream_event", lambda event: cast(_CodexStreamEvent, event))
     monkeypatch.setattr("beartools.codex.logger", FakeLogger())
 
     result = asyncio.run(run_codex_markdown_async(md_file, None, None))
@@ -603,19 +663,20 @@ def test_run_codex_markdown_recovers_when_multi_delta_precedes_final_response_er
         def error(self, message: str, *args: object) -> None:
             del message, args
 
-    from beartools.codex import _CodexStreamEvent, _InternalRunResult
+    from beartools.codex import _CodexStreamEvent
 
-    async def fake_stream() -> AsyncIterator[_CodexStreamEvent]:
+    async def fake_stream() -> AsyncIterator[object]:
         yield _CodexStreamEvent(type="response.output_text.delta", message="第一段", display_text="第一段")
         yield _CodexStreamEvent(type="response.output_text.delta", message="，第二段", display_text="，第二段")
         yield _CodexStreamEvent(type="response.output_text.delta", message="，第三段", display_text="，第三段")
         raise RuntimeError("Model did not produce a final response!")
 
-    async def fake_run_codex_stream(prompt: str) -> _InternalRunResult:
+    async def fake_run_codex_stream(prompt: str) -> _FakeStreamRunResult:
         assert prompt == "请执行"
-        return _InternalRunResult(events=fake_stream(), final_text="第一段，第二段，第三段")
+        return _build_fake_stream_result(events=fake_stream(), final_output="第一段，第二段，第三段")
 
     monkeypatch.setattr("beartools.codex._run_codex_stream", fake_run_codex_stream)
+    monkeypatch.setattr("beartools.codex._normalize_stream_event", lambda event: cast(_CodexStreamEvent, event))
     monkeypatch.setattr("beartools.codex.logger", FakeLogger())
 
     result = asyncio.run(run_codex_markdown_async(md_file, None, None))
@@ -646,18 +707,19 @@ def test_run_codex_markdown_recovers_when_final_response_error_has_no_events(
         def error(self, message: str, *args: object) -> None:
             del message, args
 
-    from beartools.codex import _CodexStreamEvent, _InternalRunResult
+    from beartools.codex import _CodexStreamEvent
 
-    async def fake_stream() -> AsyncIterator[_CodexStreamEvent]:
+    async def fake_stream() -> AsyncIterator[object]:
         if False:
             yield _CodexStreamEvent(type="unknown_event", message="noop")
         raise RuntimeError("Model did not produce a final response!")
 
-    async def fake_run_codex_stream(prompt: str) -> _InternalRunResult:
+    async def fake_run_codex_stream(prompt: str) -> _FakeStreamRunResult:
         assert prompt == "请执行"
-        return _InternalRunResult(events=fake_stream(), final_text="")
+        return _build_fake_stream_result(events=fake_stream(), final_output="")
 
     monkeypatch.setattr("beartools.codex._run_codex_stream", fake_run_codex_stream)
+    monkeypatch.setattr("beartools.codex._normalize_stream_event", lambda event: cast(_CodexStreamEvent, event))
     monkeypatch.setattr("beartools.codex.logger", FakeLogger())
 
     result = asyncio.run(run_codex_markdown_async(md_file, None, None))
