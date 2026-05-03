@@ -112,34 +112,11 @@ def _stream_final_text(stream: RunResultStreaming) -> str:
     return "" if final_output is None else str(final_output)
 
 
-def _to_safe_jsonable(value: object) -> object:
-    """尽量把对象转成安全可序列化的结构。"""
-
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {str(key): _to_safe_jsonable(item) for key, item in cast(Mapping[str, object], value).items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_to_safe_jsonable(item) for item in value]
-
-    normalized: dict[str, object] = {}
-    value_type = _safe_getattr(value, "type")
-    if value_type is not None:
-        normalized["type"] = str(value_type)
-    value_name = _safe_getattr(value, "name")
-    if value_name is not None:
-        normalized["name"] = str(value_name)
-    if normalized:
-        return {key: _to_safe_jsonable(item) for key, item in normalized.items()}
-    return str(value)
-
-
 def _build_unknown_event(event: object) -> _CodexStreamEvent:
     """把无法识别的事件统一转换为 unknown_event。"""
 
     event_type = _extract_event_type(event)
-    raw = _to_safe_jsonable(event)
-    return _CodexStreamEvent(type="unknown_event", message=f"{event_type}: {raw}")
+    return _CodexStreamEvent(type="unknown_event", message=f"{event_type}: {event}")
 
 
 def _serialize_event(event: _CodexStreamEvent) -> str:

@@ -301,6 +301,9 @@ def test_stream_codex_events_returns_final_output_and_unknown_events(
             self.type = "response.completed"
             self.payload = {"status": "completed"}
 
+        def __str__(self) -> str:
+            return "unknown-event-text"
+
     class FakeFinalOutput:
         def __str__(self) -> str:
             return "最终回答"
@@ -332,9 +335,7 @@ def test_stream_codex_events_returns_final_output_and_unknown_events(
 
     events, final_text = asyncio.run(collect())
 
-    assert events == [
-        _CodexStreamEvent(type="unknown_event", message="response.completed: {'type': 'response.completed'}")
-    ]
+    assert events == [_CodexStreamEvent(type="unknown_event", message="response.completed: unknown-event-text")]
     assert final_text == "最终回答"
 
 
