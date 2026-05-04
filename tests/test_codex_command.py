@@ -6,19 +6,23 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from beartools.cli import app
-from beartools.codex import (
-    _CodexStreamEvent,
+from beartools.codex import _CodexStreamEvent, _normalize_stream_event, run_codex_markdown_async
+from beartools.codex_pic import (
+    CodexPicBatchItemResult,
+    CodexPicBatchResult,
+    CodexPicResult,
     _TokenUsage,
-    _normalize_stream_event,
+    _log_pic_stage,
     _refine_pic_prompt_async,
-    run_codex_markdown_async,
     run_codex_pic,
+    run_codex_picbatch,
     run_codex_picedit,
 )
 from beartools.config import CodexConfig, Config
@@ -134,8 +138,6 @@ def test_codex_pic_prints_output_dir(tmp_path: Path) -> None:
     md_file.parent.mkdir(parents=True)
     md_file.write_text("生成图片", encoding="utf-8")
 
-    from beartools.codex import CodexPicResult
-
     def fake_run_codex_pic(
         *,
         md_path: Path,
@@ -167,8 +169,6 @@ def test_codex_pic_passes_cli_options(tmp_path: Path) -> None:
     md_file = tmp_path / "input" / "codex" / "poster.md"
     md_file.parent.mkdir(parents=True)
     md_file.write_text("生成海报", encoding="utf-8")
-
-    from beartools.codex import CodexPicResult
 
     captured: dict[str, object] = {}
 
@@ -215,11 +215,100 @@ def test_codex_pic_passes_cli_options(tmp_path: Path) -> None:
     }
 
 
+def test_codex_picbatch_prints_mixed_results_and_keeps_exit_zero(tmp_path: Path) -> None:
+    first_file = tmp_path / "first.md"
+    second_file = tmp_path / "second.md"
+    first_file.write_text("生成第一张图", encoding="utf-8")
+    second_file.write_text("生成第二张图", encoding="utf-8")
+
+    def fake_run_codex_picbatch(
+        *,
+        md_paths: list[Path],
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicBatchResult:
+        assert md_paths == [first_file, second_file]
+        assert size is None
+        assert quality is None
+        assert output_format is None
+        return CodexPicBatchResult(
+            results=[
+                CodexPicBatchItemResult(
+                    md_path=first_file,
+                    succeeded=True,
+                    image_output_file=Path("output") / "pic" / "first" / "first.png",
+                    trace_output_file=Path("output") / "pic" / "first" / "first.trace.log",
+                    error_message=None,
+                ),
+                CodexPicBatchItemResult(
+                    md_path=second_file,
+                    succeeded=False,
+                    image_output_file=None,
+                    trace_output_file=Path("output") / "pic" / "second" / "second.trace.log",
+                    error_message="refine boom",
+                ),
+            ]
+        )
+
+    with patch("beartools.commands.codex.command.run_codex_picbatch", side_effect=fake_run_codex_picbatch):
+        result = runner.invoke(app, ["codex", "picbatch", f"{first_file},{second_file}"])
+
+    assert result.exit_code == 0
+    assert f"[成功] {first_file}" in result.stdout
+    assert "first.png" in result.stdout
+    assert f"[失败] {second_file}" in result.stdout
+    assert "refine boom" in result.stdout
+
+
+def test_codex_picbatch_passes_cli_options(tmp_path: Path) -> None:
+    first_file = tmp_path / "first.md"
+    second_file = tmp_path / "second.md"
+    first_file.write_text("生成第一张图", encoding="utf-8")
+    second_file.write_text("生成第二张图", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run_codex_picbatch(
+        *,
+        md_paths: list[Path],
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicBatchResult:
+        captured["md_paths"] = md_paths
+        captured["size"] = size
+        captured["quality"] = quality
+        captured["output_format"] = output_format
+        return CodexPicBatchResult(results=[])
+
+    with patch("beartools.commands.codex.command.run_codex_picbatch", side_effect=fake_run_codex_picbatch):
+        result = runner.invoke(
+            app,
+            [
+                "codex",
+                "picbatch",
+                f"{first_file},{second_file}",
+                "--size",
+                "1536x1024",
+                "--quality",
+                "medium",
+                "--output-format",
+                "webp",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "md_paths": [first_file, second_file],
+        "size": "1536x1024",
+        "quality": "medium",
+        "output_format": "webp",
+    }
+
+
 def test_codex_picedit_prints_output_dir(tmp_path: Path) -> None:
     image_file = tmp_path / "avatar.png"
     image_file.write_bytes(b"image")
-
-    from beartools.codex import CodexPicResult
 
     def fake_run_codex_picedit(
         *,
@@ -289,10 +378,10 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
             captured["request_timeout"] = timeout
             return self
 
-    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
-    monkeypatch.setattr("beartools.codex._refine_picedit_prompt_async", fake_refine_picedit_prompt_async)
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic._refine_picedit_prompt_async", fake_refine_picedit_prompt_async)
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(
                 base_url="https://example.com/v1",
@@ -322,8 +411,9 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
     assert captured["image_name"] == str(image_file)
     image_kwargs = captured["kwargs"]
     assert isinstance(image_kwargs, dict)
-    image_value = image_kwargs.get("image")
-    assert image_kwargs == {
+    image_kwargs_mapping = cast(dict[str, object], image_kwargs)
+    image_value = image_kwargs_mapping.get("image")
+    assert image_kwargs_mapping == {
         "model": "gpt-image-2",
         "image": image_value,
         "prompt": "保留人物主体，提亮光线并增加悬浮面板",
@@ -368,7 +458,7 @@ def test_run_codex_picedit_rejects_invalid_options(
     image_file.write_bytes(b"source-image")
 
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(
                 base_url="https://example.com/v1",
@@ -413,10 +503,10 @@ def test_run_codex_picedit_strips_existing_version_suffix(tmp_path: Path, monkey
             del timeout
             return self
 
-    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
-    monkeypatch.setattr("beartools.codex._refine_picedit_prompt_async", fake_refine_picedit_prompt_async)
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic._refine_picedit_prompt_async", fake_refine_picedit_prompt_async)
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(
                 base_url="https://example.com/v1",
@@ -478,10 +568,10 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
             captured["request_timeout"] = timeout
             return self
 
-    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
-    monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic._refine_pic_prompt_async", fake_refine_pic_prompt_async)
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(
                 base_url="https://example.com/v1",
@@ -536,8 +626,6 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
 
 
 def test_log_pic_stage_records_prompt_and_usage(caplog: pytest.LogCaptureFixture) -> None:
-    from beartools.codex import _log_pic_stage
-
     caplog.set_level("INFO")
     _log_pic_stage(
         "pic_completed",
@@ -590,10 +678,10 @@ def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pyt
             captured["request_timeout"] = timeout
             return self
 
-    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
-    monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic._refine_pic_prompt_async", fake_refine_pic_prompt_async)
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(
                 base_url="https://example.com/v1",
@@ -653,7 +741,7 @@ def test_run_codex_pic_rejects_invalid_options(
     md_file.write_text("生成图片", encoding="utf-8")
 
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(
                 base_url="https://example.com/v1",
@@ -721,7 +809,7 @@ def test_run_codex_pic_requires_pic_model(tmp_path: Path, monkeypatch: pytest.Mo
     md_file.write_text("生成图片", encoding="utf-8")
 
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(base_url="https://example.com/v1", api_key="token", model="demo-model", pic_model="")
         ),
@@ -741,9 +829,9 @@ def test_run_codex_pic_writes_trace_when_refine_fails(tmp_path: Path, monkeypatc
         del prompt, config
         raise RuntimeError("refine boom")
 
-    monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr("beartools.codex_pic._refine_pic_prompt_async", fake_refine_pic_prompt_async)
     monkeypatch.setattr(
-        "beartools.codex.get_config",
+        "beartools.codex_pic.get_config",
         lambda: Config(
             codex=CodexConfig(
                 base_url="https://example.com/v1",
@@ -818,11 +906,12 @@ def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.M
         def __init__(self, *args: object, **kwargs: object) -> None:
             captured["agent_kwargs"] = kwargs
 
-    monkeypatch.setattr("beartools.codex.Runner", FakeRunner)
-    monkeypatch.setattr("beartools.codex.OpenAIResponsesModel", FakeModel)
-    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
-    monkeypatch.setattr("beartools.codex.Agent", FakeAgent)
-    monkeypatch.setattr("beartools.codex.set_tracing_disabled", lambda _value: None)
+    monkeypatch.setattr("beartools.codex_pic.Runner", FakeRunner)
+    monkeypatch.setattr("beartools.codex_pic.OpenAIResponsesModel", FakeModel)
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic.Agent", FakeAgent)
+    monkeypatch.setattr("beartools.codex_pic.set_tracing_disabled", lambda _value: None)
+    monkeypatch.setattr("beartools.codex_pic._build_refine_instructions", lambda _name: "模板里的提示词")
 
     refined = asyncio.run(
         _refine_pic_prompt_async(
@@ -838,6 +927,116 @@ def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.M
     assert captured["base_url"] == "https://example.com/v1"
     assert captured["model"] == "grok-3-mini"
     assert captured["input"] == "原始 markdown 提示词"
+    agent_kwargs = cast(dict[str, object], captured["agent_kwargs"])
+    assert agent_kwargs["instructions"] == "模板里的提示词"
+
+
+def test_run_codex_picbatch_collects_success_and_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    first_file = tmp_path / "first.md"
+    second_file = tmp_path / "second.md"
+    first_file.write_text("生成第一张图", encoding="utf-8")
+    second_file.write_text("生成第二张图", encoding="utf-8")
+
+    def fake_run_codex_pic(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        assert size == "1536x1024"
+        assert quality == "medium"
+        assert output_format == "webp"
+        if md_path == second_file:
+            raise RuntimeError("refine boom")
+        output_dir = Path("output") / "pic" / md_path.stem
+        return CodexPicResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / f"{md_path.stem}.webp",
+            trace_output_file=output_dir / f"{md_path.stem}.trace.log",
+        )
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        return fake_run_codex_pic(md_path=md_path, size=size, quality=quality, output_format=output_format)
+
+    monkeypatch.setattr("beartools.codex_pic.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_pic.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+                pic_output_format="png",
+            )
+        ),
+    )
+
+    result = run_codex_picbatch([first_file, second_file], size="1536x1024", quality="medium", output_format="webp")
+
+    assert len(result.results) == 2
+    assert result.results[0].md_path == first_file
+    assert result.results[0].succeeded is True
+    assert result.results[0].image_output_file == Path("output") / "pic" / "first" / "first.webp"
+    assert result.results[0].trace_output_file == Path("output") / "pic" / "first" / "first.trace.log"
+    assert result.results[0].error_message is None
+    assert result.results[1].md_path == second_file
+    assert result.results[1].succeeded is False
+    assert result.results[1].image_output_file is None
+    assert result.results[1].trace_output_file == Path("output") / "pic" / "second" / "second.trace.log"
+    assert result.results[1].error_message == "refine boom"
+
+
+def test_run_codex_picbatch_rejects_empty_input() -> None:
+    with pytest.raises(ValueError, match="不能为空"):
+        run_codex_picbatch([])
+
+
+def test_run_codex_picbatch_limits_concurrency_to_two(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    files = [tmp_path / f"task_{index}.md" for index in range(3)]
+    for md_file in files:
+        md_file.write_text("生成图片", encoding="utf-8")
+
+    active_count = 0
+    max_active_count = 0
+    counter_lock = asyncio.Lock()
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        del md_path, size, quality, output_format
+        nonlocal active_count, max_active_count
+        async with counter_lock:
+            active_count += 1
+            if active_count > max_active_count:
+                max_active_count = active_count
+        await asyncio.sleep(0.05)
+        async with counter_lock:
+            active_count -= 1
+        output_dir = Path("output") / "pic" / "ok"
+        return CodexPicResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "ok.png",
+            trace_output_file=output_dir / "ok.trace.log",
+        )
+
+    monkeypatch.setattr("beartools.codex_pic.run_codex_pic_async", fake_run_codex_pic_async)
+
+    result = run_codex_picbatch(files)
+
+    assert len(result.results) == 3
+    assert max_active_count == 2
 
 
 def test_run_codex_markdown_recovers_on_stream_error_and_keeps_final_output(
