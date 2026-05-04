@@ -49,6 +49,8 @@ class CodexRunResult:
 class _CodexStreamEvent:
     type: Literal[
         "response.output_text.delta",
+        "response.lifecycle",
+        "agent_updated_stream_event",
         "tool_called",
         "tool_output",
         "reasoning_item_created",
@@ -186,6 +188,24 @@ def _resolve_official_tool_name(event_item: _OfficialToolEventItem) -> str:
     return "tool"
 
 
+def _normalize_raw_response_item_event(event_data: object) -> _CodexStreamEvent | None:
+    """补充处理 Responses 原始事件里已完成的 item。"""
+
+    item = _safe_getattr(event_data, "item")
+    if item is None:
+        return None
+
+    item_type = str(_safe_getattr(item, "type") or "")
+    if item_type.endswith("_call"):
+        return _CodexStreamEvent(type="tool_called", message=item_type, display_text=f"[tool:start] {item_type}")
+
+    if item_type in {"reasoning", "reasoning_item"}:
+        text = str(item)
+        return _CodexStreamEvent(type="reasoning_item_created", message=text, display_text=f"[thinking] {text}")
+
+    return None
+
+
 def _normalize_stream_event(event: object) -> _CodexStreamEvent:
     """把官方 stream 事件统一映射为内部事件结构。"""
 
@@ -193,8 +213,13 @@ def _normalize_stream_event(event: object) -> _CodexStreamEvent:
     from agents.items import ReasoningItem as RuntimeReasoningItem
     from agents.items import ToolCallItem as RuntimeToolCallItem
     from agents.items import ToolCallOutputItem as RuntimeToolCallOutputItem
+    from agents.stream_events import AgentUpdatedStreamEvent as RuntimeAgentUpdatedStreamEvent
     from agents.stream_events import RawResponsesStreamEvent as RuntimeRawResponsesStreamEvent
     from agents.stream_events import RunItemStreamEvent as RuntimeRunItemStreamEvent
+
+    if isinstance(event, cast(type[object], RuntimeAgentUpdatedStreamEvent)):
+        event_type = str(_safe_getattr(event, "type") or "agent_updated_stream_event")
+        return _CodexStreamEvent(type="agent_updated_stream_event", message=f"{event_type}: {event}")
 
     event_data = _safe_getattr(event, "data")
     if (
@@ -203,6 +228,11 @@ def _normalize_stream_event(event: object) -> _CodexStreamEvent:
     ):
         delta = str(_safe_getattr(event_data, "delta") or "")
         return _CodexStreamEvent(type="response.output_text.delta", message=delta, display_text=delta)
+
+    if isinstance(event, RuntimeRawResponsesStreamEvent):
+        normalized_item_event = _normalize_raw_response_item_event(event_data)
+        if normalized_item_event is not None:
+            return normalized_item_event
 
     if isinstance(event, RuntimeRunItemStreamEvent):
         item = _safe_getattr(event, "item")
@@ -215,6 +245,10 @@ def _normalize_stream_event(event: object) -> _CodexStreamEvent:
         if isinstance(item, RuntimeReasoningItem):  # type: ignore[misc]
             text = str(_safe_getattr(item, "raw_item") or "")
             return _CodexStreamEvent(type="reasoning_item_created", message=text, display_text=f"[thinking] {text}")
+
+    if isinstance(event, RuntimeRawResponsesStreamEvent) and event_data is not None:
+        event_type = str(_safe_getattr(event_data, "type") or "raw_response_event")
+        return _CodexStreamEvent(type="response.lifecycle", message=f"{event_type}: {event_data}")
 
     return _build_unknown_event(event)
 

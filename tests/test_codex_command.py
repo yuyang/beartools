@@ -12,7 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from beartools.cli import app
-from beartools.codex import _CodexStreamEvent, run_codex_markdown_async
+from beartools.codex import _CodexStreamEvent, _normalize_stream_event, run_codex_markdown_async
 from beartools.config import CodexConfig, Config
 
 runner = CliRunner()
@@ -210,3 +210,143 @@ def test_run_codex_markdown_recovers_on_stream_error_and_keeps_final_output(
     assert '"type": "unknown_event"' in trace_text
     assert "turn.started" in trace_text
     assert "stream_error: socket error" in trace_text
+
+
+def test_normalize_stream_event_maps_agent_updated_event() -> None:
+    class FakeRuntimeAgentUpdatedStreamEvent:
+        def __init__(self) -> None:
+            self.type = "agent_updated_stream_event"
+            self.new_agent = "Codex Runner"
+
+        def __repr__(self) -> str:
+            return "FakeAgentUpdatedEvent(new_agent='Codex Runner')"
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "agents.stream_events": type(
+                "FakeModule",
+                (),
+                {
+                    "AgentUpdatedStreamEvent": FakeRuntimeAgentUpdatedStreamEvent,
+                    "RawResponsesStreamEvent": type("RawResponsesStreamEvent", (), {}),
+                    "RunItemStreamEvent": type("RunItemStreamEvent", (), {}),
+                },
+            )(),
+            "agents.items": type(
+                "FakeItemsModule",
+                (),
+                {
+                    "ReasoningItem": type("ReasoningItem", (), {}),
+                    "ToolCallItem": type("ToolCallItem", (), {}),
+                    "ToolCallOutputItem": type("ToolCallOutputItem", (), {}),
+                },
+            )(),
+        },
+    ):
+        event = _normalize_stream_event(FakeRuntimeAgentUpdatedStreamEvent())
+
+    assert event == _CodexStreamEvent(
+        type="agent_updated_stream_event",
+        message="agent_updated_stream_event: FakeAgentUpdatedEvent(new_agent='Codex Runner')",
+        display_text="",
+    )
+
+
+def test_normalize_stream_event_maps_raw_response_lifecycle_events() -> None:
+    class FakeResponseEvent:
+        def __init__(self, event_type: str) -> None:
+            self.type = event_type
+
+        def __repr__(self) -> str:
+            return f"FakeResponseEvent(type={self.type!r})"
+
+    class FakeRuntimeRawResponsesStreamEvent:
+        def __init__(self, event_type: str) -> None:
+            self.type = "raw_response_event"
+            self.data = FakeResponseEvent(event_type)
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "agents.stream_events": type(
+                "FakeModule",
+                (),
+                {
+                    "AgentUpdatedStreamEvent": type("AgentUpdatedStreamEvent", (), {}),
+                    "RawResponsesStreamEvent": FakeRuntimeRawResponsesStreamEvent,
+                    "RunItemStreamEvent": type("RunItemStreamEvent", (), {}),
+                },
+            )(),
+            "agents.items": type(
+                "FakeItemsModule",
+                (),
+                {
+                    "ReasoningItem": type("ReasoningItem", (), {}),
+                    "ToolCallItem": type("ToolCallItem", (), {}),
+                    "ToolCallOutputItem": type("ToolCallOutputItem", (), {}),
+                },
+            )(),
+        },
+    ):
+        event = _normalize_stream_event(FakeRuntimeRawResponsesStreamEvent("response.created"))
+
+    assert event == _CodexStreamEvent(
+        type="response.lifecycle",
+        message="response.created: FakeResponseEvent(type='response.created')",
+        display_text="",
+    )
+
+
+def test_normalize_stream_event_maps_raw_response_web_search_call() -> None:
+    class FakeResponseEvent:
+        def __init__(self) -> None:
+            self.type = "response.output_item.done"
+            self.item = type(
+                "FakeWebSearchItem",
+                (),
+                {
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "__repr__": lambda _self: "FakeWebSearchItem(type='web_search_call', status='completed')",
+                },
+            )()
+
+        def __repr__(self) -> str:
+            return "FakeResponseEvent(type='response.output_item.done', item=FakeWebSearchItem(type='web_search_call', status='completed'))"
+
+    class FakeRuntimeRawResponsesStreamEvent:
+        def __init__(self) -> None:
+            self.type = "raw_response_event"
+            self.data = FakeResponseEvent()
+
+    with patch.dict(
+        "sys.modules",
+        {
+            "agents.stream_events": type(
+                "FakeModule",
+                (),
+                {
+                    "AgentUpdatedStreamEvent": type("AgentUpdatedStreamEvent", (), {}),
+                    "RawResponsesStreamEvent": FakeRuntimeRawResponsesStreamEvent,
+                    "RunItemStreamEvent": type("RunItemStreamEvent", (), {}),
+                },
+            )(),
+            "agents.items": type(
+                "FakeItemsModule",
+                (),
+                {
+                    "ReasoningItem": type("ReasoningItem", (), {}),
+                    "ToolCallItem": type("ToolCallItem", (), {}),
+                    "ToolCallOutputItem": type("ToolCallOutputItem", (), {}),
+                },
+            )(),
+        },
+    ):
+        event = _normalize_stream_event(FakeRuntimeRawResponsesStreamEvent())
+
+    assert event == _CodexStreamEvent(
+        type="tool_called",
+        message="web_search_call",
+        display_text="[tool:start] web_search_call",
+    )
