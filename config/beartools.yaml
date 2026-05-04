@@ -93,7 +93,7 @@ gmail:
 codex:
   base_url: "https://api-xai.ainaibahub.com/v1"
   api_key: "@get agent.naiba.key"
-  model: "grok-3-mini"
+  model: "gpt-5.5"
   pic_model: "gpt-image-2"
   instructions: "你是 Codex 助手"
   output_dir: "output/codex"

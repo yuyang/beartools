@@ -112,7 +112,7 @@ class CodexConfig:
     output_dir: Path = Path("output/codex")
     timeout_seconds: int = 60
     bin_path: str = ""
-    pic_size: str = "1024x1024"
+    pic_size: str = "1536x1024"
     pic_quality: str = "high"
     pic_output_format: str = "png"
     pic_response_format: str = "b64_json"
@@ -335,7 +335,7 @@ def _parse_codex_config(settings: _SettingsLike) -> CodexConfig:
         output_dir=Path(str(codex_settings.get("output_dir", "output/codex"))),
         timeout_seconds=_parse_positive_int(codex_settings.get("timeout_seconds", 60), "codex.timeout_seconds", 60),
         bin_path=str(codex_settings.get("bin_path", "")),
-        pic_size=str(codex_settings.get("pic_size", "1024x1024")),
+        pic_size=str(codex_settings.get("pic_size", "1536x1024")),
         pic_quality=str(codex_settings.get("pic_quality", "high")),
         pic_output_format=str(codex_settings.get("pic_output_format", "png")),
         pic_response_format=str(codex_settings.get("pic_response_format", "b64_json")),

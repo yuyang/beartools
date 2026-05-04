@@ -138,7 +138,7 @@ def test_codex_pic_prints_output_dir(tmp_path: Path) -> None:
         assert size is None
         assert quality is None
         assert output_format is None
-        output_dir = Path("out") / "pic" / "cover"
+        output_dir = Path("output") / "pic" / "cover"
         return CodexPicResult(
             output_dir=output_dir,
             image_output_file=output_dir / "cover.png",
@@ -149,9 +149,9 @@ def test_codex_pic_prints_output_dir(tmp_path: Path) -> None:
         result = runner.invoke(app, ["codex", "pic", str(md_file)])
 
     assert result.exit_code == 0
-    assert "结果目录: out/pic/cover" in result.stdout
-    assert "图片已写入: out/pic/cover/cover.png" in result.stdout
-    assert "Trace 已写入: out/pic/cover/cover.trace.log" in result.stdout
+    assert "结果目录: output/pic/cover" in result.stdout
+    assert "图片已写入: output/pic/cover/cover.png" in result.stdout
+    assert "Trace 已写入: output/pic/cover/cover.trace.log" in result.stdout
 
 
 def test_codex_pic_passes_cli_options(tmp_path: Path) -> None:
@@ -174,7 +174,7 @@ def test_codex_pic_passes_cli_options(tmp_path: Path) -> None:
         captured["size"] = size
         captured["quality"] = quality
         captured["output_format"] = output_format
-        output_dir = Path("out") / "pic" / "poster"
+        output_dir = Path("output") / "pic" / "poster"
         return CodexPicResult(
             output_dir=output_dir,
             image_output_file=output_dir / "poster.webp",
@@ -232,10 +232,15 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
             )()
 
     class FakeClient:
-        def __init__(self, *, api_key: str, base_url: str) -> None:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["client_timeout"] = timeout
             self.images = FakeImages()
+
+        def with_options(self, *, timeout: float) -> FakeClient:
+            captured["request_timeout"] = timeout
+            return self
 
     monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
     monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
@@ -247,7 +252,7 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
                 api_key="token",
                 model="grok-3-mini",
                 pic_model="gpt-image-2",
-                pic_size="1024x1024",
+                pic_size="1536x1024",
                 pic_quality="high",
                 pic_output_format="png",
                 pic_response_format="b64_json",
@@ -259,24 +264,33 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
 
     assert captured["api_key"] == "token"
     assert captured["base_url"] == "https://example.com/v1"
+    assert captured["client_timeout"] == 600.0
+    assert captured["request_timeout"] == 600.0
     assert captured["refine_prompt"] == "生成图片"
     assert captured["refine_model"] == "grok-3-mini"
     assert captured["kwargs"] == {
         "model": "gpt-image-2",
         "prompt": "润色后的图片提示词",
-        "size": "1024x1024",
+        "size": "1536x1024",
         "quality": "high",
         "output_format": "png",
         "response_format": "b64_json",
     }
-    assert result.image_output_file == Path("out") / "pic" / "banner" / "banner.png"
+    assert result.image_output_file == Path("output") / "pic" / "banner" / "banner.png"
     assert result.image_output_file.read_bytes() == b"hello"
-    assert result.trace_output_file == Path("out") / "pic" / "banner" / "banner.trace.log"
+    assert result.trace_output_file == Path("output") / "pic" / "banner" / "banner.trace.log"
     trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"status": "completed"' in trace_text
+    assert '"refine_timeout_seconds": 300' in trace_text
+    assert '"image_timeout_seconds": 600' in trace_text
+    assert '"refine_elapsed_seconds":' in trace_text
+    assert '"image_elapsed_seconds":' in trace_text
+    assert '"refine_model": "grok-3-mini"' in trace_text
+    assert '"pic_model": "gpt-image-2"' in trace_text
     assert '"original_prompt": "生成图片"' in trace_text
     assert '"refined_prompt": "润色后的图片提示词"' in trace_text
     assert '"image_response": "image-response"' in trace_text
-    assert result.output_dir == Path("out") / "pic" / "banner"
+    assert result.output_dir == Path("output") / "pic" / "banner"
 
 
 def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -305,9 +319,14 @@ def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pyt
             )()
 
     class FakeClient:
-        def __init__(self, *, api_key: str, base_url: str) -> None:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             del api_key, base_url
+            captured["client_timeout"] = timeout
             self.images = FakeImages()
+
+        def with_options(self, *, timeout: float) -> FakeClient:
+            captured["request_timeout"] = timeout
+            return self
 
     monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
     monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
@@ -319,7 +338,7 @@ def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pyt
                 api_key="token",
                 model="grok-3-mini",
                 pic_model="gpt-image-2",
-                pic_size="1024x1024",
+                pic_size="1536x1024",
                 pic_quality="high",
                 pic_output_format="png",
                 pic_response_format="b64_json",
@@ -331,6 +350,8 @@ def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pyt
 
     assert captured["refine_prompt"] == "生成专辑封面"
     assert captured["refine_model"] == "grok-3-mini"
+    assert captured["client_timeout"] == 600.0
+    assert captured["request_timeout"] == 600.0
     assert captured["kwargs"] == {
         "model": "gpt-image-2",
         "prompt": "更适合做图的提示词",
@@ -339,7 +360,7 @@ def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pyt
         "output_format": "webp",
         "response_format": "b64_json",
     }
-    assert result.image_output_file == Path("out") / "pic" / "album" / "album.webp"
+    assert result.image_output_file == Path("output") / "pic" / "album" / "album.webp"
 
 
 def test_run_codex_pic_rejects_non_markdown_file(tmp_path: Path) -> None:
@@ -446,6 +467,39 @@ def test_run_codex_pic_requires_pic_model(tmp_path: Path, monkeypatch: pytest.Mo
 
     with pytest.raises(RuntimeError, match="pic_model"):
         run_codex_pic(md_path=md_file)
+
+
+def test_run_codex_pic_writes_trace_when_refine_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    md_file = tmp_path / "input" / "codex" / "failed.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成失败图片", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+        del prompt, config
+        raise RuntimeError("refine boom")
+
+    monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="refine boom"):
+        run_codex_pic(md_path=md_file)
+
+    trace_file = Path("output") / "pic" / "failed" / "failed.trace.log"
+    trace_text = trace_file.read_text(encoding="utf-8")
+    assert '"status": "refine_failed"' in trace_text
+    assert '"refine_elapsed_seconds":' in trace_text
+    assert '"error": "refine boom"' in trace_text
 
 
 def test_run_codex_markdown_happy_path_writes_trace_and_final_output(

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import time
 from typing import TYPE_CHECKING, Literal, cast
 
 from agents import Agent, OpenAIResponsesModel, Runner, Tool, WebSearchTool, set_tracing_disabled
@@ -36,6 +37,8 @@ else:
 
 console = Console()
 logger = get_logger(__name__)
+DEFAULT_PIC_REFINE_TIMEOUT_SECONDS = 300
+DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS = 600
 
 
 @dataclass
@@ -105,7 +108,7 @@ def _resolve_output_paths(
 def _resolve_pic_output_paths(md_path: Path, output_format: str) -> tuple[Path, Path, Path]:
     """解析 pic 子命令的固定输出路径。"""
 
-    output_dir = Path("out") / "pic" / md_path.stem
+    output_dir = Path("output") / "pic" / md_path.stem
     final_output_file = output_dir / f"{md_path.stem}.{output_format}"
     trace_output_file = output_dir / f"{md_path.stem}.trace.log"
     return output_dir, final_output_file, trace_output_file
@@ -173,6 +176,13 @@ def _normalize_pic_response_format(response_format: str) -> Literal["url", "b64_
     if response_format not in allowed_formats:
         raise ValueError(f"不支持的图片响应格式: {response_format}")
     return cast(Literal["url", "b64_json"], response_format)
+
+
+def _write_pic_trace(trace_output_file: Path, payload: dict[str, object]) -> None:
+    """写入图片任务 trace，确保失败场景也有可排查信息。"""
+
+    trace_output_file.parent.mkdir(parents=True, exist_ok=True)
+    trace_output_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 async def _refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
@@ -451,7 +461,7 @@ def run_codex_pic(
     quality: str | None = None,
     output_format: str | None = None,
 ) -> CodexPicResult:
-    """执行图片生成任务，并写入 out/pic/<文件名> 目录。"""
+    """执行图片生成任务，并写入 output/pic/<文件名> 目录。"""
 
     if not md_path.exists():
         raise FileNotFoundError(f"Markdown 文件不存在: {md_path}")
@@ -469,34 +479,81 @@ def run_codex_pic(
     pic_response_format = _normalize_pic_response_format(config.pic_response_format)
     output_dir, image_output_file, trace_output_file = _resolve_pic_output_paths(md_path, pic_output_format)
     output_dir.mkdir(parents=True, exist_ok=True)
-    refined_prompt = asyncio.run(_refine_pic_prompt_async(prompt, config))
+    trace_payload: dict[str, object] = {
+        "status": "started",
+        "original_prompt": prompt,
+        "refine_model": config.model,
+        "pic_model": config.pic_model,
+        "size": pic_size,
+        "quality": pic_quality,
+        "output_format": pic_output_format,
+        "response_format": pic_response_format,
+        "refine_timeout_seconds": max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS),
+        "image_timeout_seconds": max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS),
+    }
+    _write_pic_trace(trace_output_file, trace_payload)
+    refine_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS)
 
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
-    response: ImagesResponse = asyncio.run(
-        client.images.generate(
-            model=config.pic_model,
-            prompt=refined_prompt,
-            size=pic_size,
-            quality=pic_quality,
-            output_format=pic_output_format,
-            response_format=pic_response_format,
+    console.print(f"[pic] 开始优化做图提示词（超时 {refine_timeout_seconds}s）...", style="cyan")
+    logger.info("开始优化做图提示词: md_path=%s model=%s timeout=%ss", md_path, config.model, refine_timeout_seconds)
+    refine_started_at = time.monotonic()
+    try:
+        refined_prompt = asyncio.run(
+            asyncio.wait_for(_refine_pic_prompt_async(prompt, config), timeout=refine_timeout_seconds)
         )
+    except Exception as exc:
+        trace_payload["status"] = "refine_failed"
+        trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+        trace_payload["error"] = str(exc)
+        _write_pic_trace(trace_output_file, trace_payload)
+        logger.exception("优化做图提示词失败: md_path=%s", md_path)
+        raise
+
+    trace_payload["status"] = "refined"
+    trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+    trace_payload["refined_prompt"] = refined_prompt
+    _write_pic_trace(trace_output_file, trace_payload)
+    image_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS)
+    console.print(f"[pic] 提示词优化完成，开始生成图片（超时 {image_timeout_seconds}s）...", style="cyan")
+    logger.info(
+        "开始生成图片: md_path=%s pic_model=%s size=%s quality=%s timeout=%ss",
+        md_path,
+        config.pic_model,
+        pic_size,
+        pic_quality,
+        image_timeout_seconds,
     )
+
+    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, timeout=float(image_timeout_seconds))
+    image_started_at = time.monotonic()
+    try:
+        response: ImagesResponse = asyncio.run(
+            client.with_options(timeout=float(image_timeout_seconds)).images.generate(
+                model=config.pic_model,
+                prompt=refined_prompt,
+                size=pic_size,
+                quality=pic_quality,
+                output_format=pic_output_format,
+                response_format=pic_response_format,
+            )
+        )
+    except Exception as exc:
+        trace_payload["status"] = "image_generate_failed"
+        trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
+        trace_payload["error"] = str(exc)
+        _write_pic_trace(trace_output_file, trace_payload)
+        logger.exception("生成图片失败: md_path=%s", md_path)
+        raise
+
     image_bytes = base64.b64decode(_extract_image_b64_json(response))
     image_output_file.write_bytes(image_bytes)
-    trace_payload: dict[str, str] = {
-        "original_prompt": prompt,
-        "refined_prompt": refined_prompt,
-        "image_response": str(response),
-    }
-    trace_output_file.write_text(
-        json.dumps(
-            trace_payload,
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    trace_payload["status"] = "completed"
+    trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
+    trace_payload["image_response"] = str(response)
+    trace_payload["image_output_file"] = str(image_output_file)
+    _write_pic_trace(trace_output_file, trace_payload)
+    console.print("[pic] 图片生成完成，开始写入结果文件...", style="cyan")
+    logger.info("图片生成完成: image_output=%s trace_output=%s", image_output_file, trace_output_file)
 
     return CodexPicResult(
         output_dir=output_dir,
