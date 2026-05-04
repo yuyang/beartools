@@ -55,7 +55,7 @@ def test_codex_config_pic_defaults() -> None:
     config = CodexConfig()
 
     assert config.pic_size == "1024x1024"
-    assert config.pic_quality == "medium"
+    assert config.pic_quality == "high"
 
 
 def _patch_runtime(
@@ -300,7 +300,7 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
                 model="grok-3-mini",
                 pic_model="gpt-image-2",
                 pic_size="1024x1024",
-                pic_quality="medium",
+                pic_quality="high",
                 pic_output_format="png",
                 pic_response_format="b64_json",
             )
@@ -328,7 +328,7 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
         "image": image_value,
         "prompt": "保留人物主体，提亮光线并增加悬浮面板",
         "size": "1024x1024",
-        "quality": "medium",
+        "quality": "high",
         "output_format": "png",
         "response_format": "b64_json",
     }
@@ -424,7 +424,7 @@ def test_run_codex_picedit_strips_existing_version_suffix(tmp_path: Path, monkey
                 model="grok-3-mini",
                 pic_model="gpt-image-2",
                 pic_size="1024x1024",
-                pic_quality="medium",
+                pic_quality="high",
                 pic_output_format="png",
                 pic_response_format="b64_json",
             )
@@ -489,7 +489,7 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
                 model="grok-3-mini",
                 pic_model="gpt-image-2",
                 pic_size="1536x1024",
-                pic_quality="medium",
+                pic_quality="high",
                 pic_output_format="png",
                 pic_response_format="b64_json",
             )
@@ -508,7 +508,7 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
         "model": "gpt-image-2",
         "prompt": "润色后的图片提示词",
         "size": "1536x1024",
-        "quality": "medium",
+        "quality": "high",
         "output_format": "png",
         "response_format": "b64_json",
     }
