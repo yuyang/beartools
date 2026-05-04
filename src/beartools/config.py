@@ -107,10 +107,15 @@ class CodexConfig:
     base_url: str = ""
     api_key: str = ""
     model: str = ""
+    pic_model: str = ""
     instructions: str = "你是 Codex 助手"
     output_dir: Path = Path("output/codex")
     timeout_seconds: int = 60
     bin_path: str = ""
+    pic_size: str = "1024x1024"
+    pic_quality: str = "high"
+    pic_output_format: str = "png"
+    pic_response_format: str = "b64_json"
 
 
 @dataclass
@@ -325,10 +330,15 @@ def _parse_codex_config(settings: _SettingsLike) -> CodexConfig:
         base_url=str(codex_settings.get("base_url", "")),
         api_key=str(codex_settings.get("api_key", "")),
         model=str(codex_settings.get("model", "")),
+        pic_model=str(codex_settings.get("pic_model", codex_settings.get("model", ""))),
         instructions=str(codex_settings.get("instructions", "你是 Codex 助手")),
         output_dir=Path(str(codex_settings.get("output_dir", "output/codex"))),
         timeout_seconds=_parse_positive_int(codex_settings.get("timeout_seconds", 60), "codex.timeout_seconds", 60),
         bin_path=str(codex_settings.get("bin_path", "")),
+        pic_size=str(codex_settings.get("pic_size", "1024x1024")),
+        pic_quality=str(codex_settings.get("pic_quality", "high")),
+        pic_output_format=str(codex_settings.get("pic_output_format", "png")),
+        pic_response_format=str(codex_settings.get("pic_response_format", "b64_json")),
     )
 
 

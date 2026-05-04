@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from asyncio.subprocess import PIPE
+import base64
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 import json
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from agents.items import ReasoningItem, ToolCallItem, ToolCallOutputItem
     from agents.result import RunResultStreaming
     from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
+    from openai.types.images_response import ImagesResponse
 
     type _OfficialToolEventItem = ReasoningItem | ToolCallItem | ToolCallOutputItem
 else:
@@ -43,6 +45,15 @@ class CodexRunResult:
     final_output_file: Path
     trace_output_file: Path
     final_text: str
+
+
+@dataclass
+class CodexPicResult:
+    """Codex 图片任务执行结果。"""
+
+    output_dir: Path
+    image_output_file: Path
+    trace_output_file: Path
 
 
 @dataclass(frozen=True)
@@ -69,6 +80,14 @@ def _require_codex_config(config: CodexConfig) -> None:
         raise RuntimeError("codex.model 必填且必须是非空字符串")
 
 
+def _require_codex_pic_config(config: CodexConfig) -> None:
+    """校验图片任务所需配置。"""
+
+    _require_codex_config(config)
+    if not config.pic_model.strip():
+        raise RuntimeError("codex.pic_model 必填且必须是非空字符串")
+
+
 def _resolve_output_paths(
     md_path: Path,
     output_file: Path | None,
@@ -81,6 +100,106 @@ def _resolve_output_paths(
     final_output_file.parent.mkdir(parents=True, exist_ok=True)
     trace_output_file.parent.mkdir(parents=True, exist_ok=True)
     return final_output_file, trace_output_file
+
+
+def _resolve_pic_output_paths(md_path: Path, output_format: str) -> tuple[Path, Path, Path]:
+    """解析 pic 子命令的固定输出路径。"""
+
+    output_dir = Path("out") / "pic" / md_path.stem
+    final_output_file = output_dir / f"{md_path.stem}.{output_format}"
+    trace_output_file = output_dir / f"{md_path.stem}.trace.log"
+    return output_dir, final_output_file, trace_output_file
+
+
+def _extract_image_b64_json(response: object) -> str:
+    """从图片生成响应中提取首张图片的 base64 内容。"""
+
+    data = _safe_getattr(response, "data")
+    if not isinstance(data, list) or not data:
+        raise RuntimeError("图片生成响应缺少 data")
+
+    first_item = data[0]
+    b64_json = _safe_getattr(first_item, "b64_json")
+    if not isinstance(b64_json, str) or not b64_json.strip():
+        raise RuntimeError("图片生成响应缺少 b64_json")
+    return b64_json
+
+
+def _normalize_pic_size(
+    size: str,
+) -> Literal["auto", "1024x1024", "1536x1024", "1024x1536", "256x256", "512x512", "1792x1024", "1024x1792"]:
+    """校验并收窄图片尺寸，满足 SDK 的字面量类型要求。"""
+
+    allowed_sizes = {
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "256x256",
+        "512x512",
+        "1792x1024",
+        "1024x1792",
+    }
+    if size not in allowed_sizes:
+        raise ValueError(f"不支持的图片尺寸: {size}")
+    return cast(
+        Literal["auto", "1024x1024", "1536x1024", "1024x1536", "256x256", "512x512", "1792x1024", "1024x1792"],
+        size,
+    )
+
+
+def _normalize_pic_quality(quality: str) -> Literal["standard", "hd", "low", "medium", "high", "auto"]:
+    """校验并收窄图片质量。"""
+
+    allowed_qualities = {"standard", "hd", "low", "medium", "high", "auto"}
+    if quality not in allowed_qualities:
+        raise ValueError(f"不支持的图片质量: {quality}")
+    return cast(Literal["standard", "hd", "low", "medium", "high", "auto"], quality)
+
+
+def _normalize_pic_output_format(output_format: str) -> Literal["png", "jpeg", "webp"]:
+    """校验并收窄输出格式。"""
+
+    allowed_formats = {"png", "jpeg", "webp"}
+    if output_format not in allowed_formats:
+        raise ValueError(f"不支持的图片输出格式: {output_format}")
+    return cast(Literal["png", "jpeg", "webp"], output_format)
+
+
+def _normalize_pic_response_format(response_format: str) -> Literal["url", "b64_json"]:
+    """校验并收窄响应格式。"""
+
+    allowed_formats = {"url", "b64_json"}
+    if response_format not in allowed_formats:
+        raise ValueError(f"不支持的图片响应格式: {response_format}")
+    return cast(Literal["url", "b64_json"], response_format)
+
+
+async def _refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+    """先用文本模型把原始 Markdown 润色成更适合做图的提示词。"""
+
+    set_tracing_disabled(True)
+    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
+    model = OpenAIResponsesModel(model=config.model, openai_client=client)
+    agent = Agent(
+        name="Codex Pic Prompt Refiner",
+        instructions=(
+            "你是图片提示词优化助手。"
+            "请把用户给出的 Markdown 内容改写成适合图片生成模型使用的单段提示词，"
+            "保留核心主体、场景、风格、构图、光线和质量要求，删除无关说明。"
+            "只输出润色后的最终提示词，不要添加标题、解释或 Markdown。"
+        ),
+        model=model,
+        tools=[],
+    )  # type: ignore[misc]
+    result = await Runner.run(agent, input=prompt)  # type: ignore[misc]
+    final_output = cast(object | None, result.final_output)
+    if final_output is None:
+        raise RuntimeError("图片提示词润色失败：未返回结果")
+    refined_prompt = str(final_output).strip()
+    if not refined_prompt:
+        raise RuntimeError("图片提示词润色失败：返回内容为空")
+    return refined_prompt
 
 
 def _extract_event_type(event: object) -> str:
@@ -323,3 +442,64 @@ def run_codex_markdown(*, md_path: Path, output_file: Path | None, trace_file: P
     """同步执行 Codex Markdown 任务。"""
 
     return asyncio.run(run_codex_markdown_async(md_path=md_path, output_file=output_file, trace_file=trace_file))
+
+
+def run_codex_pic(
+    *,
+    md_path: Path,
+    size: str | None = None,
+    quality: str | None = None,
+    output_format: str | None = None,
+) -> CodexPicResult:
+    """执行图片生成任务，并写入 out/pic/<文件名> 目录。"""
+
+    if not md_path.exists():
+        raise FileNotFoundError(f"Markdown 文件不存在: {md_path}")
+    if not md_path.is_file():
+        raise ValueError(f"Markdown 路径不是文件: {md_path}")
+    if md_path.suffix.lower() != ".md":
+        raise ValueError(f"pic 输入必须是 Markdown 文件: {md_path}")
+
+    prompt = md_path.read_text(encoding="utf-8")
+    config = get_config().codex
+    _require_codex_pic_config(config)
+    pic_size = _normalize_pic_size(size or config.pic_size)
+    pic_quality = _normalize_pic_quality(quality or config.pic_quality)
+    pic_output_format = _normalize_pic_output_format(output_format or config.pic_output_format)
+    pic_response_format = _normalize_pic_response_format(config.pic_response_format)
+    output_dir, image_output_file, trace_output_file = _resolve_pic_output_paths(md_path, pic_output_format)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    refined_prompt = asyncio.run(_refine_pic_prompt_async(prompt, config))
+
+    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
+    response: ImagesResponse = asyncio.run(
+        client.images.generate(
+            model=config.pic_model,
+            prompt=refined_prompt,
+            size=pic_size,
+            quality=pic_quality,
+            output_format=pic_output_format,
+            response_format=pic_response_format,
+        )
+    )
+    image_bytes = base64.b64decode(_extract_image_b64_json(response))
+    image_output_file.write_bytes(image_bytes)
+    trace_payload: dict[str, str] = {
+        "original_prompt": prompt,
+        "refined_prompt": refined_prompt,
+        "image_response": str(response),
+    }
+    trace_output_file.write_text(
+        json.dumps(
+            trace_payload,
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    return CodexPicResult(
+        output_dir=output_dir,
+        image_output_file=image_output_file,
+        trace_output_file=trace_output_file,
+    )

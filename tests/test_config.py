@@ -58,8 +58,14 @@ class _CodexConfig(Protocol):
     base_url: str
     api_key: str
     model: str
+    pic_model: str
+    instructions: str
     output_dir: Path
     timeout_seconds: int
+    pic_size: str
+    pic_quality: str
+    pic_output_format: str
+    pic_response_format: str
 
 
 class _Config(Protocol):
@@ -402,7 +408,7 @@ doctor:
 
         assert set(agent_data.keys()) == {"primary", "candidates"}
         assert set(agent_data["primary"].keys()) == allowed_fields
-        assert agent_data["primary"]["api_key"] == "@get agent.openrouter.key"
+        assert agent_data["primary"]["api_key"] == "@get agent.primary.key"
         assert agent_data["primary"]["provider"] in {"openai", "openrouter"}
 
         candidates = agent_data["candidates"]
@@ -410,11 +416,11 @@ doctor:
         assert candidates
         for candidate in candidates:
             assert set(candidate.keys()) == allowed_fields
-            assert candidate["api_key"] == "@get agent.zhizengzeng.key"
+            assert candidate["api_key"] == "@get agent.candidate_1.key"
             assert candidate["provider"] in {"openai", "openrouter"}
 
         siyuan_data = sample_data["siyuan"]
-        assert "token" not in siyuan_data
+        assert siyuan_data["token"] == "@get siyuan.token"
         assert siyuan_data["default_note"] == "REPLACE_ME_NOTE_ID"
         assert siyuan_data["notebook"] == "REPLACE_ME_NOTEBOOK_ID"
         assert siyuan_data["path"] == "/REPLACE_ME_PATH"
@@ -577,9 +583,10 @@ agent:
         sample_path = self.original_cwd / "config" / "beartools.yaml.sample"
         sample_data = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
 
-        assert sample_data["siyuan"].get("token") is None
-        assert sample_data["agent"]["primary"]["api_key"] == "@get agent.openrouter.key"
-        assert sample_data["agent"]["candidates"][0]["api_key"] == "@get agent.zhizengzeng.key"
+        assert sample_data["siyuan"]["token"] == "@get siyuan.token"
+        assert sample_data["agent"]["primary"]["api_key"] == "@get agent.primary.key"
+        assert sample_data["agent"]["candidates"][0]["api_key"] == "@get agent.candidate_1.key"
+        assert sample_data["codex"]["api_key"] == "@get codex.api_key"
 
     def test_secrets_sample_contains_sensitive_values(self) -> None:
         sample_path = self.original_cwd / "config" / "beartools.secrets.yaml.sample"
@@ -593,10 +600,15 @@ agent:
         self._write_config(
             """
 codex:
-  base_url: "https://codex.example.com"
-  model: "codex-mini-latest"
+  base_url: "https://api-xai.ainaibahub.com/v1"
+  model: "grok-3-mini"
+  pic_model: "gpt-image-2"
   output_dir: "codex-output"
   timeout_seconds: 45
+  pic_size: "1536x1024"
+  pic_quality: "medium"
+  pic_output_format: "webp"
+  pic_response_format: "b64_json"
 """
         )
         self._write_secrets(
@@ -608,9 +620,14 @@ codex:
 
         config = load_config()
 
-        assert config.codex.base_url == "https://codex.example.com"
+        assert config.codex.base_url == "https://api-xai.ainaibahub.com/v1"
         assert config.codex.api_key == "secret-key"
-        assert config.codex.model == "codex-mini-latest"
+        assert config.codex.model == "grok-3-mini"
+        assert config.codex.pic_model == "gpt-image-2"
         assert config.codex.instructions == "你是 Codex 助手"
         assert config.codex.output_dir == Path("codex-output")
         assert config.codex.timeout_seconds == 45
+        assert config.codex.pic_size == "1536x1024"
+        assert config.codex.pic_quality == "medium"
+        assert config.codex.pic_output_format == "webp"
+        assert config.codex.pic_response_format == "b64_json"

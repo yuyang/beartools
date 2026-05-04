@@ -43,3 +43,4 @@ def test_cli_registers_codex_group() -> None:
 
     assert result.exit_code == 0
     assert "run" in result.stdout
+    assert "pic" in result.stdout

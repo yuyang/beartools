@@ -12,7 +12,13 @@ import pytest
 from typer.testing import CliRunner
 
 from beartools.cli import app
-from beartools.codex import _CodexStreamEvent, _normalize_stream_event, run_codex_markdown_async
+from beartools.codex import (
+    _CodexStreamEvent,
+    _normalize_stream_event,
+    _refine_pic_prompt_async,
+    run_codex_markdown_async,
+    run_codex_pic,
+)
 from beartools.config import CodexConfig, Config
 
 runner = CliRunner()
@@ -37,6 +43,7 @@ def _build_fake_config(output_dir: Path) -> Config:
             base_url="https://example.com/v1",
             api_key="token",
             model="demo-model",
+            pic_model="demo-pic-model",
             output_dir=output_dir,
         )
     )
@@ -113,6 +120,271 @@ def test_codex_run_prints_final_and_trace_paths(tmp_path: Path) -> None:
     assert "prompt.codex.trace.log" in result.stdout
 
 
+def test_codex_pic_prints_output_dir(tmp_path: Path) -> None:
+    md_file = tmp_path / "input" / "codex" / "cover.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成图片", encoding="utf-8")
+
+    from beartools.codex import CodexPicResult
+
+    def fake_run_codex_pic(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        assert md_path == md_file
+        assert size is None
+        assert quality is None
+        assert output_format is None
+        output_dir = Path("out") / "pic" / "cover"
+        return CodexPicResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "cover.png",
+            trace_output_file=output_dir / "cover.trace.log",
+        )
+
+    with patch("beartools.commands.codex.command.run_codex_pic", side_effect=fake_run_codex_pic):
+        result = runner.invoke(app, ["codex", "pic", str(md_file)])
+
+    assert result.exit_code == 0
+    assert "结果目录: out/pic/cover" in result.stdout
+    assert "图片已写入: out/pic/cover/cover.png" in result.stdout
+    assert "Trace 已写入: out/pic/cover/cover.trace.log" in result.stdout
+
+
+def test_codex_pic_passes_cli_options(tmp_path: Path) -> None:
+    md_file = tmp_path / "input" / "codex" / "poster.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成海报", encoding="utf-8")
+
+    from beartools.codex import CodexPicResult
+
+    captured: dict[str, object] = {}
+
+    def fake_run_codex_pic(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        captured["md_path"] = md_path
+        captured["size"] = size
+        captured["quality"] = quality
+        captured["output_format"] = output_format
+        output_dir = Path("out") / "pic" / "poster"
+        return CodexPicResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "poster.webp",
+            trace_output_file=output_dir / "poster.trace.log",
+        )
+
+    with patch("beartools.commands.codex.command.run_codex_pic", side_effect=fake_run_codex_pic):
+        result = runner.invoke(
+            app,
+            [
+                "codex",
+                "pic",
+                str(md_file),
+                "--size",
+                "1536x1024",
+                "--quality",
+                "medium",
+                "--output-format",
+                "webp",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "md_path": md_file,
+        "size": "1536x1024",
+        "quality": "medium",
+        "output_format": "webp",
+    }
+
+
+def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    md_file = tmp_path / "input" / "codex" / "banner.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成图片", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+        captured["refine_prompt"] = prompt
+        captured["refine_model"] = config.model
+        return "润色后的图片提示词"
+
+    class FakeImages:
+        async def generate(self, **kwargs: object) -> object:
+            captured["kwargs"] = kwargs
+            return type(
+                "FakeImageResponse",
+                (),
+                {
+                    "data": [type("FakeImageData", (), {"b64_json": "aGVsbG8="})()],
+                    "__str__": lambda _self: "image-response",
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            self.images = FakeImages()
+
+    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+                pic_size="1024x1024",
+                pic_quality="high",
+                pic_output_format="png",
+                pic_response_format="b64_json",
+            )
+        ),
+    )
+
+    result = run_codex_pic(md_path=md_file)
+
+    assert captured["api_key"] == "token"
+    assert captured["base_url"] == "https://example.com/v1"
+    assert captured["refine_prompt"] == "生成图片"
+    assert captured["refine_model"] == "grok-3-mini"
+    assert captured["kwargs"] == {
+        "model": "gpt-image-2",
+        "prompt": "润色后的图片提示词",
+        "size": "1024x1024",
+        "quality": "high",
+        "output_format": "png",
+        "response_format": "b64_json",
+    }
+    assert result.image_output_file == Path("out") / "pic" / "banner" / "banner.png"
+    assert result.image_output_file.read_bytes() == b"hello"
+    assert result.trace_output_file == Path("out") / "pic" / "banner" / "banner.trace.log"
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"original_prompt": "生成图片"' in trace_text
+    assert '"refined_prompt": "润色后的图片提示词"' in trace_text
+    assert '"image_response": "image-response"' in trace_text
+    assert result.output_dir == Path("out") / "pic" / "banner"
+
+
+def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    md_file = tmp_path / "input" / "codex" / "album.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成专辑封面", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+        captured["refine_prompt"] = prompt
+        captured["refine_model"] = config.model
+        return "更适合做图的提示词"
+
+    class FakeImages:
+        async def generate(self, **kwargs: object) -> object:
+            captured["kwargs"] = kwargs
+            return type(
+                "FakeImageResponse",
+                (),
+                {
+                    "data": [type("FakeImageData", (), {"b64_json": "aGVsbG8="})()],
+                    "__str__": lambda _self: "image-response",
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            del api_key, base_url
+            self.images = FakeImages()
+
+    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+                pic_size="1024x1024",
+                pic_quality="high",
+                pic_output_format="png",
+                pic_response_format="b64_json",
+            )
+        ),
+    )
+
+    result = run_codex_pic(md_path=md_file, size="1536x1024", quality="low", output_format="webp")
+
+    assert captured["refine_prompt"] == "生成专辑封面"
+    assert captured["refine_model"] == "grok-3-mini"
+    assert captured["kwargs"] == {
+        "model": "gpt-image-2",
+        "prompt": "更适合做图的提示词",
+        "size": "1536x1024",
+        "quality": "low",
+        "output_format": "webp",
+        "response_format": "b64_json",
+    }
+    assert result.image_output_file == Path("out") / "pic" / "album" / "album.webp"
+
+
+def test_run_codex_pic_rejects_non_markdown_file(tmp_path: Path) -> None:
+    text_file = tmp_path / "input" / "codex" / "banner.txt"
+    text_file.parent.mkdir(parents=True)
+    text_file.write_text("生成图片", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Markdown"):
+        run_codex_pic(md_path=text_file)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"size": "999x999"}, "图片尺寸"),
+        ({"quality": "ultra"}, "图片质量"),
+        ({"output_format": "gif"}, "输出格式"),
+    ],
+)
+def test_run_codex_pic_rejects_invalid_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, str],
+    message: str,
+) -> None:
+    md_file = tmp_path / "input" / "codex" / "invalid.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成图片", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        run_codex_pic(md_path=md_file, **kwargs)
+
+
 def test_execute_shell_commands_passes_cwd_and_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     executed: dict[str, object] = {}
 
@@ -161,6 +433,21 @@ def test_run_codex_markdown_raises_when_config_missing(tmp_path: Path, monkeypat
         asyncio.run(run_codex_markdown_async(md_file, None, None))
 
 
+def test_run_codex_pic_requires_pic_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    md_file = tmp_path / "prompt.md"
+    md_file.write_text("生成图片", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(base_url="https://example.com/v1", api_key="token", model="demo-model", pic_model="")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="pic_model"):
+        run_codex_pic(md_path=md_file)
+
+
 def test_run_codex_markdown_happy_path_writes_trace_and_final_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -185,6 +472,56 @@ def test_run_codex_markdown_happy_path_writes_trace_and_final_output(
     assert '"type": "reasoning_item_created"' in trace_text
     assert '"type": "tool_called"' in trace_text
     assert '"message": "部分回答"' in trace_text
+
+
+def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    del tmp_path
+    captured: dict[str, object] = {}
+
+    class FakeRunResult:
+        final_output = "润色后的提示词"
+
+    class FakeRunner:
+        @staticmethod
+        async def run(agent: object, input: str) -> FakeRunResult:
+            captured["agent"] = agent
+            captured["input"] = input
+            return FakeRunResult()
+
+    class FakeModel:
+        def __init__(self, *, model: str, openai_client: object) -> None:
+            captured["model"] = model
+            captured["openai_client"] = openai_client
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+
+    class FakeAgent:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["agent_kwargs"] = kwargs
+
+    monkeypatch.setattr("beartools.codex.Runner", FakeRunner)
+    monkeypatch.setattr("beartools.codex.OpenAIResponsesModel", FakeModel)
+    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex.Agent", FakeAgent)
+    monkeypatch.setattr("beartools.codex.set_tracing_disabled", lambda _value: None)
+
+    refined = asyncio.run(
+        _refine_pic_prompt_async(
+            "原始 markdown 提示词",
+            CodexConfig(
+                base_url="https://example.com/v1", api_key="token", model="grok-3-mini", pic_model="gpt-image-2"
+            ),
+        )
+    )
+
+    assert refined == "润色后的提示词"
+    assert captured["api_key"] == "token"
+    assert captured["base_url"] == "https://example.com/v1"
+    assert captured["model"] == "grok-3-mini"
+    assert captured["input"] == "原始 markdown 提示词"
 
 
 def test_run_codex_markdown_recovers_on_stream_error_and_keeps_final_output(
