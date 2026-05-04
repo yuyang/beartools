@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 from asyncio.subprocess import PIPE
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, cast
 
-from agents import ShellTool, Tool, WebSearchTool
+from agents import Agent, OpenAIResponsesModel, Runner, Tool, WebSearchTool, set_tracing_disabled
+from agents.items import ReasoningItem, ToolCallItem, ToolCallOutputItem
+from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
 from agents.tool import ShellCallOutcome, ShellCommandOutput, ShellCommandRequest, ShellResult
+from openai import AsyncOpenAI
 from rich.console import Console
 
 from beartools.config import CodexConfig, get_config
@@ -28,15 +31,6 @@ else:
     type RunResultStreaming = object
     type RawResponsesStreamEvent = object
     type RunItemStreamEvent = object
-
-
-class _SupportsRunStream(Protocol):
-    """约束官方 streamed 结果需要暴露的最小接口。"""
-
-    final_output: object | None
-
-    def stream_events(self) -> AsyncIterator[object]: ...
-
 
 console = Console()
 logger = get_logger(__name__)
@@ -106,13 +100,6 @@ def _safe_getattr(obj: object, attr: str) -> object | None:
     return cast(object | None, getattr(obj, attr, None))
 
 
-def _stream_final_text(stream: _SupportsRunStream) -> str:
-    """显式收敛官方 stream.final_output 的类型。"""
-
-    final_output = _safe_getattr(stream, "final_output")
-    return "" if final_output is None else str(final_output)
-
-
 def _build_unknown_event(event: object) -> _CodexStreamEvent:
     """把无法识别的事件统一转换为 unknown_event。"""
 
@@ -179,7 +166,7 @@ async def _shell_tool_executor(request: ShellCommandRequest) -> str | ShellResul
 def _build_codex_tools() -> list[Tool]:
     """构建 Codex 运行时可用工具。"""
 
-    return [WebSearchTool(), ShellTool(executor=_shell_tool_executor)]
+    return [WebSearchTool()]
 
 
 def _resolve_official_tool_name(event_item: _OfficialToolEventItem) -> str:
@@ -199,47 +186,33 @@ def _resolve_official_tool_name(event_item: _OfficialToolEventItem) -> str:
     return "tool"
 
 
-async def _run_codex_stream(prompt: str) -> _SupportsRunStream:
-    from agents import Agent, OpenAIResponsesModel, Runner, set_tracing_disabled
-    from openai import AsyncOpenAI
-
-    config = get_config().codex
-    _require_codex_config(config)
-
-    set_tracing_disabled(True)
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
-    model = OpenAIResponsesModel(model=config.model, openai_client=client)
-    agent = Agent(
-        name="Codex Runner",
-        instructions=config.instructions,
-        model=model,
-        tools=_build_codex_tools(),
-    )  # type: ignore[misc]
-    stream = Runner.run_streamed(agent, input=prompt)  # type: ignore[misc]
-
-    return cast(_SupportsRunStream, stream)
-
-
 def _normalize_stream_event(event: object) -> _CodexStreamEvent:
     """把官方 stream 事件统一映射为内部事件结构。"""
 
-    from agents.items import ReasoningItem, ToolCallItem, ToolCallOutputItem
-    from agents.stream_events import RawResponsesStreamEvent, RunItemStreamEvent
+    # 这些事件类型在运行时必须保证为真实类对象，避免被 TYPE_CHECKING 占位类型污染。
+    from agents.items import ReasoningItem as RuntimeReasoningItem
+    from agents.items import ToolCallItem as RuntimeToolCallItem
+    from agents.items import ToolCallOutputItem as RuntimeToolCallOutputItem
+    from agents.stream_events import RawResponsesStreamEvent as RuntimeRawResponsesStreamEvent
+    from agents.stream_events import RunItemStreamEvent as RuntimeRunItemStreamEvent
 
     event_data = _safe_getattr(event, "data")
-    if isinstance(event, RawResponsesStreamEvent) and _safe_getattr(event_data, "type") == "response.output_text.delta":
+    if (
+        isinstance(event, RuntimeRawResponsesStreamEvent)
+        and _safe_getattr(event_data, "type") == "response.output_text.delta"
+    ):
         delta = str(_safe_getattr(event_data, "delta") or "")
         return _CodexStreamEvent(type="response.output_text.delta", message=delta, display_text=delta)
 
-    if isinstance(event, RunItemStreamEvent):
+    if isinstance(event, RuntimeRunItemStreamEvent):
         item = _safe_getattr(event, "item")
-        if isinstance(item, ToolCallItem):  # type: ignore[misc]
+        if isinstance(item, RuntimeToolCallItem):  # type: ignore[misc]
             tool_name = _resolve_official_tool_name(item)
             return _CodexStreamEvent(type="tool_called", message=tool_name, display_text=f"[tool:start] {tool_name}")
-        if isinstance(item, ToolCallOutputItem):  # type: ignore[misc]
+        if isinstance(item, RuntimeToolCallOutputItem):  # type: ignore[misc]
             output = str(_safe_getattr(item, "output") or "")
             return _CodexStreamEvent(type="tool_output", message=output, display_text=f"[tool:output] {output}")
-        if isinstance(item, ReasoningItem):  # type: ignore[misc]
+        if isinstance(item, RuntimeReasoningItem):  # type: ignore[misc]
             text = str(_safe_getattr(item, "raw_item") or "")
             return _CodexStreamEvent(type="reasoning_item_created", message=text, display_text=f"[thinking] {text}")
 
@@ -260,31 +233,51 @@ async def run_codex_markdown_async(
 
     prompt = md_path.read_text(encoding="utf-8")
     config = get_config().codex
+    _require_codex_config(config)
     final_output_file, trace_output_file = _resolve_output_paths(md_path, output_file, trace_file, config)
 
     logger.info("开始执行 Codex: md_path=%s model=%s", md_path, config.model)
 
-    stream: _SupportsRunStream | None = None
+    set_tracing_disabled(True)
+    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
+    model = OpenAIResponsesModel(model=config.model, openai_client=client)
+    agent = Agent(
+        name="Codex Runner",
+        instructions=config.instructions,
+        model=model,
+        tools=_build_codex_tools(),
+    )  # type: ignore[misc]
+
+    final_text = ""
     with trace_output_file.open("w", encoding="utf-8") as trace_handle:
-        stream = await _run_codex_stream(prompt)
+        stream = Runner.run_streamed(agent, input=prompt)  # type: ignore[misc]
         try:
             async for raw_event in stream.stream_events():
-                event = _normalize_stream_event(raw_event)
-                serialized_event = _serialize_event(event)
-                trace_handle.write(serialized_event + "\n")
-                trace_handle.flush()
-                logger.info("Codex stream event: %s", serialized_event)
-                if event.display_text:
-                    end = "" if event.type == "response.output_text.delta" else "\n"
-                    console.print(event.display_text, end=end)
+                try:
+                    event = _normalize_stream_event(raw_event)
+                    serialized_event = _serialize_event(event)
+                    trace_handle.write(serialized_event + "\n")
+                    trace_handle.flush()
+                    logger.info("Codex stream event: %s", serialized_event)
+                    if event.display_text:
+                        end = "" if event.type == "response.output_text.delta" else "\n"
+                        console.print(event.display_text, end=end)
+                except Exception as exc:
+                    event_error = _CodexStreamEvent(type="unknown_event", message=f"event_error: {exc}")
+                    serialized_event = _serialize_event(event_error)
+                    trace_handle.write(serialized_event + "\n")
+                    trace_handle.flush()
+                    logger.warning("Codex 单个事件处理异常，忽略并继续消费: %s", exc)
         except Exception as exc:
             stream_error_event = _CodexStreamEvent(type="unknown_event", message=f"stream_error: {exc}")
             serialized_event = _serialize_event(stream_error_event)
             trace_handle.write(serialized_event + "\n")
             trace_handle.flush()
             logger.warning("Codex 事件流记录异常，忽略并继续输出最终结果: %s", exc)
+        final_output = cast(object | None, stream.final_output)
+        if final_output is not None:
+            final_text = str(final_output)
 
-    final_text = "" if stream is None else _stream_final_text(stream)
     final_output_file.write_text(final_text, encoding="utf-8")
     logger.info("Codex 执行完成: final_output=%s trace_output=%s", final_output_file, trace_output_file)
     return CodexRunResult(
