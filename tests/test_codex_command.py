@@ -14,10 +14,12 @@ from typer.testing import CliRunner
 from beartools.cli import app
 from beartools.codex import (
     _CodexStreamEvent,
+    _TokenUsage,
     _normalize_stream_event,
     _refine_pic_prompt_async,
     run_codex_markdown_async,
     run_codex_pic,
+    run_codex_picedit,
 )
 from beartools.config import CodexConfig, Config
 
@@ -47,6 +49,13 @@ def _build_fake_config(output_dir: Path) -> Config:
             output_dir=output_dir,
         )
     )
+
+
+def test_codex_config_pic_defaults() -> None:
+    config = CodexConfig()
+
+    assert config.pic_size == "1024x1024"
+    assert config.pic_quality == "medium"
 
 
 def _patch_runtime(
@@ -206,6 +215,228 @@ def test_codex_pic_passes_cli_options(tmp_path: Path) -> None:
     }
 
 
+def test_codex_picedit_prints_output_dir(tmp_path: Path) -> None:
+    image_file = tmp_path / "avatar.png"
+    image_file.write_bytes(b"image")
+
+    from beartools.codex import CodexPicResult
+
+    def fake_run_codex_picedit(
+        *,
+        image_path: Path,
+        prompt: str,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        assert image_path == image_file
+        assert prompt == "提亮并增强科技感"
+        assert size is None
+        assert quality is None
+        assert output_format is None
+        output_dir = image_file.parent
+        return CodexPicResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "avatar_version_001.png",
+            trace_output_file=output_dir / "avatar_version_001.trace.log",
+        )
+
+    with patch("beartools.commands.codex.command.run_codex_picedit", side_effect=fake_run_codex_picedit):
+        result = runner.invoke(app, ["codex", "picedit", str(image_file), "提亮并增强科技感"])
+
+    assert result.exit_code == 0
+    normalized_stdout = result.stdout.replace("\n", "")
+    assert f"结果目录: {image_file.parent}" in normalized_stdout
+    assert f"图片已写入: {image_file.parent / 'avatar_version_001.png'}" in normalized_stdout
+    assert f"Trace 已写入: {image_file.parent / 'avatar_version_001.trace.log'}" in normalized_stdout
+
+
+def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image_file = tmp_path / "avatar.png"
+    image_file.write_bytes(b"source-image")
+    monkeypatch.chdir(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+        captured["refine_prompt"] = prompt
+        captured["refine_model"] = config.model
+        return "保留人物主体，提亮光线并增加悬浮面板"
+
+    class FakeImages:
+        async def edit(self, **kwargs: object) -> object:
+            captured["kwargs"] = kwargs
+            image_handle = kwargs["image"]
+            captured["image_name"] = getattr(image_handle, "name", "")
+            return type(
+                "FakeImageResponse",
+                (),
+                {
+                    "data": [type("FakeImageData", (), {"b64_json": "aGVsbG8="})()],
+                    "usage": {"input_tokens": 7, "output_tokens": 8, "total_tokens": 15},
+                    "__str__": lambda _self: "image-edit-response",
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            captured["client_timeout"] = timeout
+            self.images = FakeImages()
+
+        def with_options(self, *, timeout: float) -> FakeClient:
+            captured["request_timeout"] = timeout
+            return self
+
+    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex._refine_picedit_prompt_async", fake_refine_picedit_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+                pic_size="1024x1024",
+                pic_quality="medium",
+                pic_output_format="png",
+                pic_response_format="b64_json",
+            )
+        ),
+    )
+
+    existing_output = image_file.parent / "avatar_version_001.png"
+    existing_output.parent.mkdir(parents=True, exist_ok=True)
+    existing_output.write_bytes(b"old")
+
+    result = run_codex_picedit(image_path=image_file, prompt="提亮并增强科技感")
+
+    assert captured["api_key"] == "token"
+    assert captured["base_url"] == "https://example.com/v1"
+    assert captured["client_timeout"] == 600.0
+    assert captured["request_timeout"] == 600.0
+    assert captured["refine_prompt"] == "提亮并增强科技感"
+    assert captured["refine_model"] == "grok-3-mini"
+    assert captured["image_name"] == str(image_file)
+    image_kwargs = captured["kwargs"]
+    assert isinstance(image_kwargs, dict)
+    image_value = image_kwargs.get("image")
+    assert image_kwargs == {
+        "model": "gpt-image-2",
+        "image": image_value,
+        "prompt": "保留人物主体，提亮光线并增加悬浮面板",
+        "size": "1024x1024",
+        "quality": "medium",
+        "output_format": "png",
+        "response_format": "b64_json",
+    }
+    assert result.output_dir == image_file.parent
+    assert result.image_output_file == image_file.parent / "avatar_version_002.png"
+    assert result.image_output_file.read_bytes() == b"hello"
+    assert result.trace_output_file == image_file.parent / "avatar_version_002.trace.log"
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"status": "completed"' in trace_text
+    assert '"source_image":' in trace_text
+    assert '"original_prompt": "提亮并增强科技感"' in trace_text
+    assert '"refined_prompt": "保留人物主体，提亮光线并增加悬浮面板"' in trace_text
+    assert '"refine_token_usage": {' in trace_text
+    assert '"image_token_usage": {' in trace_text
+    assert '"input_tokens": 7' in trace_text
+    assert '"output_tokens": 8' in trace_text
+    assert '"total_tokens": 15' in trace_text
+    assert '"total_elapsed_seconds":' in trace_text
+    assert '"image_response": "image-edit-response"' in trace_text
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"size": "1792x1024"}, "图片编辑暂不支持该尺寸"),
+        ({"quality": "hd"}, "图片编辑暂不支持该质量"),
+        ({"output_format": "gif"}, "输出格式"),
+    ],
+)
+def test_run_codex_picedit_rejects_invalid_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, str],
+    message: str,
+) -> None:
+    image_file = tmp_path / "avatar.png"
+    image_file.write_bytes(b"source-image")
+
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        run_codex_picedit(image_path=image_file, prompt="提亮并增强科技感", **kwargs)
+
+
+def test_run_codex_picedit_strips_existing_version_suffix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image_file = tmp_path / "p2_version_001.png"
+    image_file.write_bytes(b"source-image")
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+        del prompt, config
+        return "优化后的改图提示词"
+
+    class FakeImages:
+        async def edit(self, **kwargs: object) -> object:
+            del kwargs
+            return type(
+                "FakeImageResponse",
+                (),
+                {
+                    "data": [type("FakeImageData", (), {"b64_json": "aGVsbG8="})()],
+                    "__str__": lambda _self: "image-edit-response",
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
+            del api_key, base_url, timeout
+            self.images = FakeImages()
+
+        def with_options(self, *, timeout: float) -> FakeClient:
+            del timeout
+            return self
+
+    monkeypatch.setattr("beartools.codex.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex._refine_picedit_prompt_async", fake_refine_picedit_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+                pic_size="1024x1024",
+                pic_quality="medium",
+                pic_output_format="png",
+                pic_response_format="b64_json",
+            )
+        ),
+    )
+
+    result = run_codex_picedit(image_path=image_file, prompt="提亮并增强科技感")
+
+    assert result.image_output_file == image_file.parent / "p2_version_002.png"
+    assert result.trace_output_file == image_file.parent / "p2_version_002.trace.log"
+
+
 def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     md_file = tmp_path / "input" / "codex" / "banner.md"
     md_file.parent.mkdir(parents=True)
@@ -227,6 +458,11 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
                 (),
                 {
                     "data": [type("FakeImageData", (), {"b64_json": "aGVsbG8="})()],
+                    "usage": type(
+                        "FakeUsage",
+                        (),
+                        {"input_tokens": 12, "output_tokens": 34, "total_tokens": 46},
+                    )(),
                     "__str__": lambda _self: "image-response",
                 },
             )()
@@ -253,7 +489,7 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
                 model="grok-3-mini",
                 pic_model="gpt-image-2",
                 pic_size="1536x1024",
-                pic_quality="high",
+                pic_quality="medium",
                 pic_output_format="png",
                 pic_response_format="b64_json",
             )
@@ -272,7 +508,7 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
         "model": "gpt-image-2",
         "prompt": "润色后的图片提示词",
         "size": "1536x1024",
-        "quality": "high",
+        "quality": "medium",
         "output_format": "png",
         "response_format": "b64_json",
     }
@@ -289,8 +525,34 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
     assert '"pic_model": "gpt-image-2"' in trace_text
     assert '"original_prompt": "生成图片"' in trace_text
     assert '"refined_prompt": "润色后的图片提示词"' in trace_text
+    assert '"refine_token_usage": {' in trace_text
+    assert '"image_token_usage": {' in trace_text
+    assert '"input_tokens": 12' in trace_text
+    assert '"output_tokens": 34' in trace_text
+    assert '"total_tokens": 46' in trace_text
+    assert '"total_elapsed_seconds":' in trace_text
     assert '"image_response": "image-response"' in trace_text
     assert result.output_dir == Path("output") / "pic" / "banner"
+
+
+def test_log_pic_stage_records_prompt_and_usage(caplog: pytest.LogCaptureFixture) -> None:
+    from beartools.codex import _log_pic_stage
+
+    caplog.set_level("INFO")
+    _log_pic_stage(
+        "pic_completed",
+        source=Path("input/codex/banner.md"),
+        original_prompt="原始提示词",
+        refined_prompt="优化后的提示词",
+        elapsed_seconds=1.234,
+        token_usage=_TokenUsage(input_tokens=10, output_tokens=20, total_tokens=30),
+        output_file=Path("output/pic/banner/banner.png"),
+    )
+
+    assert "original_prompt=原始提示词" in caplog.text
+    assert "refined_prompt=优化后的提示词" in caplog.text
+    assert "elapsed_seconds=1.234" in caplog.text
+    assert "input_tokens" in caplog.text
 
 
 def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

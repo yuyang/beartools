@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import time
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -39,6 +40,7 @@ console = Console()
 logger = get_logger(__name__)
 DEFAULT_PIC_REFINE_TIMEOUT_SECONDS = 300
 DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS = 600
+_PICEDIT_VERSION_SUFFIX_RE = re.compile(r"^(?P<base>.+?)_version_(?P<version>\d+)$")
 
 
 @dataclass
@@ -57,6 +59,15 @@ class CodexPicResult:
     output_dir: Path
     image_output_file: Path
     trace_output_file: Path
+
+
+@dataclass(frozen=True)
+class _TokenUsage:
+    """统一记录模型调用 token 消耗。"""
+
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,23 @@ def _resolve_pic_output_paths(md_path: Path, output_format: str) -> tuple[Path, 
     final_output_file = output_dir / f"{md_path.stem}.{output_format}"
     trace_output_file = output_dir / f"{md_path.stem}.trace.log"
     return output_dir, final_output_file, trace_output_file
+
+
+def _resolve_picedit_output_paths(image_path: Path, output_format: str) -> tuple[Path, Path, Path]:
+    """解析 picedit 子命令的固定输出路径。"""
+
+    output_dir = image_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem_match = _PICEDIT_VERSION_SUFFIX_RE.match(image_path.stem)
+    base_stem = stem_match.group("base") if stem_match is not None else image_path.stem
+    version = 1
+    while True:
+        file_stem = f"{base_stem}_version_{version:03d}"
+        final_output_file = output_dir / f"{file_stem}.{output_format}"
+        trace_output_file = output_dir / f"{file_stem}.trace.log"
+        if not final_output_file.exists() and not trace_output_file.exists():
+            return output_dir, final_output_file, trace_output_file
+        version += 1
 
 
 def _extract_image_b64_json(response: object) -> str:
@@ -178,6 +206,26 @@ def _normalize_pic_response_format(response_format: str) -> Literal["url", "b64_
     return cast(Literal["url", "b64_json"], response_format)
 
 
+def _normalize_picedit_size(
+    size: str,
+) -> Literal["auto", "1024x1024", "1536x1024", "1024x1536", "256x256", "512x512"]:
+    """校验图片编辑接口支持的尺寸。"""
+
+    allowed_sizes = {"auto", "1024x1024", "1536x1024", "1024x1536", "256x256", "512x512"}
+    if size not in allowed_sizes:
+        raise ValueError(f"图片编辑暂不支持该尺寸: {size}")
+    return cast(Literal["auto", "1024x1024", "1536x1024", "1024x1536", "256x256", "512x512"], size)
+
+
+def _normalize_picedit_quality(quality: str) -> Literal["standard", "low", "medium", "high", "auto"]:
+    """校验图片编辑接口支持的质量。"""
+
+    allowed_qualities = {"standard", "low", "medium", "high", "auto"}
+    if quality not in allowed_qualities:
+        raise ValueError(f"图片编辑暂不支持该质量: {quality}")
+    return cast(Literal["standard", "low", "medium", "high", "auto"], quality)
+
+
 def _write_pic_trace(trace_output_file: Path, payload: dict[str, object]) -> None:
     """写入图片任务 trace，确保失败场景也有可排查信息。"""
 
@@ -210,6 +258,97 @@ async def _refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
     if not refined_prompt:
         raise RuntimeError("图片提示词润色失败：返回内容为空")
     return refined_prompt
+
+
+async def _refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+    """把用户编辑意图润色成更适合图片编辑模型的提示词。"""
+
+    set_tracing_disabled(True)
+    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
+    model = OpenAIResponsesModel(model=config.model, openai_client=client)
+    agent = Agent(
+        name="Codex Pic Edit Prompt Refiner",
+        instructions=(
+            "你是图片编辑提示词优化助手。"
+            "请把用户给出的图片修改需求改写成适合图片编辑模型使用的单段提示词，"
+            "明确需要保留的主体、需要修改的局部内容、风格、构图、光线与质量要求，"
+            "避免改变用户没有要求修改的部分。"
+            "只输出润色后的最终提示词，不要添加标题、解释或 Markdown。"
+        ),
+        model=model,
+        tools=[],
+    )  # type: ignore[misc]
+    result = await Runner.run(agent, input=prompt)  # type: ignore[misc]
+    final_output = cast(object | None, result.final_output)
+    if final_output is None:
+        raise RuntimeError("图片编辑提示词润色失败：未返回结果")
+    refined_prompt = str(final_output).strip()
+    if not refined_prompt:
+        raise RuntimeError("图片编辑提示词润色失败：返回内容为空")
+    return refined_prompt
+
+
+def _extract_usage_value(usage: object, field_names: tuple[str, ...]) -> int | None:
+    """兼容对象和字典两种 usage 结构。"""
+
+    for field_name in field_names:
+        value: object | None
+        if isinstance(usage, Mapping):
+            value = cast(Mapping[str, object], usage).get(field_name)
+        else:
+            value = _safe_getattr(usage, field_name)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _extract_usage_tokens(response: object) -> _TokenUsage:
+    """尽量从不同 SDK 返回对象中提取 token 使用量。"""
+
+    usage = _safe_getattr(response, "usage")
+    if usage is None:
+        return _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
+
+    input_tokens = _extract_usage_value(usage, ("input_tokens", "prompt_tokens", "input_tokens_total"))
+    output_tokens = _extract_usage_value(usage, ("output_tokens", "completion_tokens", "output_tokens_total"))
+    total_tokens = _extract_usage_value(usage, ("total_tokens",))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    return _TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens, total_tokens=total_tokens)
+
+
+def _token_usage_to_payload(token_usage: _TokenUsage) -> dict[str, int | None]:
+    """将 token 使用量转换为可序列化结构。"""
+
+    return {
+        "input_tokens": token_usage.input_tokens,
+        "output_tokens": token_usage.output_tokens,
+        "total_tokens": token_usage.total_tokens,
+    }
+
+
+def _log_pic_stage(
+    stage: str,
+    *,
+    source: Path,
+    original_prompt: str,
+    refined_prompt: str | None = None,
+    elapsed_seconds: float | None = None,
+    token_usage: _TokenUsage | None = None,
+    output_file: Path | None = None,
+) -> None:
+    """统一记录图片任务日志，便于排查提示词、耗时和 token。"""
+
+    logger.info(
+        "图片任务阶段=%s source=%s original_prompt=%s refined_prompt=%s elapsed_seconds=%s token_usage=%s output_file=%s",
+        stage,
+        source,
+        original_prompt,
+        refined_prompt,
+        elapsed_seconds,
+        _token_usage_to_payload(token_usage) if token_usage is not None else None,
+        output_file,
+    )
 
 
 def _extract_event_type(event: object) -> str:
@@ -471,6 +610,7 @@ def run_codex_pic(
         raise ValueError(f"pic 输入必须是 Markdown 文件: {md_path}")
 
     prompt = md_path.read_text(encoding="utf-8")
+    total_started_at = time.monotonic()
     config = get_config().codex
     _require_codex_pic_config(config)
     pic_size = _normalize_pic_size(size or config.pic_size)
@@ -492,6 +632,7 @@ def run_codex_pic(
         "image_timeout_seconds": max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS),
     }
     _write_pic_trace(trace_output_file, trace_payload)
+    _log_pic_stage("pic_started", source=md_path, original_prompt=prompt)
     refine_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS)
 
     console.print(f"[pic] 开始优化做图提示词（超时 {refine_timeout_seconds}s）...", style="cyan")
@@ -512,7 +653,18 @@ def run_codex_pic(
     trace_payload["status"] = "refined"
     trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
     trace_payload["refined_prompt"] = refined_prompt
+    trace_payload["refine_token_usage"] = _token_usage_to_payload(
+        _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
+    )
     _write_pic_trace(trace_output_file, trace_payload)
+    _log_pic_stage(
+        "pic_refined",
+        source=md_path,
+        original_prompt=prompt,
+        refined_prompt=refined_prompt,
+        elapsed_seconds=cast(float, trace_payload["refine_elapsed_seconds"]),
+        token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
+    )
     image_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS)
     console.print(f"[pic] 提示词优化完成，开始生成图片（超时 {image_timeout_seconds}s）...", style="cyan")
     logger.info(
@@ -545,15 +697,164 @@ def run_codex_pic(
         logger.exception("生成图片失败: md_path=%s", md_path)
         raise
 
+    image_token_usage = _extract_usage_tokens(response)
     image_bytes = base64.b64decode(_extract_image_b64_json(response))
     image_output_file.write_bytes(image_bytes)
     trace_payload["status"] = "completed"
     trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
+    trace_payload["total_elapsed_seconds"] = round(time.monotonic() - total_started_at, 3)
+    trace_payload["image_token_usage"] = _token_usage_to_payload(image_token_usage)
     trace_payload["image_response"] = str(response)
     trace_payload["image_output_file"] = str(image_output_file)
     _write_pic_trace(trace_output_file, trace_payload)
+    _log_pic_stage(
+        "pic_completed",
+        source=md_path,
+        original_prompt=prompt,
+        refined_prompt=refined_prompt,
+        elapsed_seconds=cast(float, trace_payload["total_elapsed_seconds"]),
+        token_usage=image_token_usage,
+        output_file=image_output_file,
+    )
     console.print("[pic] 图片生成完成，开始写入结果文件...", style="cyan")
     logger.info("图片生成完成: image_output=%s trace_output=%s", image_output_file, trace_output_file)
+
+    return CodexPicResult(
+        output_dir=output_dir,
+        image_output_file=image_output_file,
+        trace_output_file=trace_output_file,
+    )
+
+
+def run_codex_picedit(
+    *,
+    image_path: Path,
+    prompt: str,
+    size: str | None = None,
+    quality: str | None = None,
+    output_format: str | None = None,
+) -> CodexPicResult:
+    """执行图片编辑任务，并写入 output/pic/<原文件名>_version_xxx.*。"""
+
+    if not image_path.exists():
+        raise FileNotFoundError(f"图片文件不存在: {image_path}")
+    if not image_path.is_file():
+        raise ValueError(f"图片路径不是文件: {image_path}")
+    if not prompt.strip():
+        raise ValueError("图片编辑提示词不能为空")
+
+    total_started_at = time.monotonic()
+    config = get_config().codex
+    _require_codex_pic_config(config)
+    pic_size = _normalize_picedit_size(size or config.pic_size)
+    pic_quality = _normalize_picedit_quality(quality or config.pic_quality)
+    pic_output_format = _normalize_pic_output_format(output_format or config.pic_output_format)
+    pic_response_format = _normalize_pic_response_format(config.pic_response_format)
+    output_dir, image_output_file, trace_output_file = _resolve_picedit_output_paths(image_path, pic_output_format)
+    trace_payload: dict[str, object] = {
+        "status": "started",
+        "source_image": str(image_path),
+        "original_prompt": prompt,
+        "refine_model": config.model,
+        "pic_model": config.pic_model,
+        "size": pic_size,
+        "quality": pic_quality,
+        "output_format": pic_output_format,
+        "response_format": pic_response_format,
+        "refine_timeout_seconds": max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS),
+        "image_timeout_seconds": max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS),
+    }
+    _write_pic_trace(trace_output_file, trace_payload)
+    _log_pic_stage("picedit_started", source=image_path, original_prompt=prompt)
+    refine_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS)
+
+    console.print(f"[picedit] 开始优化改图提示词（超时 {refine_timeout_seconds}s）...", style="cyan")
+    logger.info(
+        "开始优化改图提示词: image_path=%s model=%s timeout=%ss", image_path, config.model, refine_timeout_seconds
+    )
+    refine_started_at = time.monotonic()
+    try:
+        refined_prompt = asyncio.run(
+            asyncio.wait_for(_refine_picedit_prompt_async(prompt, config), timeout=refine_timeout_seconds)
+        )
+    except Exception as exc:
+        trace_payload["status"] = "refine_failed"
+        trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+        trace_payload["error"] = str(exc)
+        _write_pic_trace(trace_output_file, trace_payload)
+        logger.exception("优化改图提示词失败: image_path=%s", image_path)
+        raise
+
+    trace_payload["status"] = "refined"
+    trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+    trace_payload["refined_prompt"] = refined_prompt
+    trace_payload["refine_token_usage"] = _token_usage_to_payload(
+        _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
+    )
+    _write_pic_trace(trace_output_file, trace_payload)
+    _log_pic_stage(
+        "picedit_refined",
+        source=image_path,
+        original_prompt=prompt,
+        refined_prompt=refined_prompt,
+        elapsed_seconds=cast(float, trace_payload["refine_elapsed_seconds"]),
+        token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
+    )
+    image_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS)
+    console.print(f"[picedit] 提示词优化完成，开始修改图片（超时 {image_timeout_seconds}s）...", style="cyan")
+    logger.info(
+        "开始修改图片: image_path=%s pic_model=%s size=%s quality=%s timeout=%ss",
+        image_path,
+        config.pic_model,
+        pic_size,
+        pic_quality,
+        image_timeout_seconds,
+    )
+
+    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, timeout=float(image_timeout_seconds))
+    image_started_at = time.monotonic()
+    try:
+        with image_path.open("rb") as image_handle:
+            response: ImagesResponse = asyncio.run(
+                client.with_options(timeout=float(image_timeout_seconds)).images.edit(
+                    model=config.pic_model,
+                    image=image_handle,
+                    prompt=refined_prompt,
+                    size=pic_size,
+                    quality=pic_quality,
+                    output_format=pic_output_format,
+                    response_format=pic_response_format,
+                )
+            )
+    except Exception as exc:
+        trace_payload["status"] = "image_edit_failed"
+        trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
+        trace_payload["error"] = str(exc)
+        _write_pic_trace(trace_output_file, trace_payload)
+        logger.exception("修改图片失败: image_path=%s", image_path)
+        raise
+
+    image_token_usage = _extract_usage_tokens(response)
+    image_bytes = base64.b64decode(_extract_image_b64_json(response))
+    image_output_file.write_bytes(image_bytes)
+    trace_payload["status"] = "completed"
+    trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
+    trace_payload["total_elapsed_seconds"] = round(time.monotonic() - total_started_at, 3)
+    trace_payload["image_token_usage"] = _token_usage_to_payload(image_token_usage)
+    trace_payload["image_response"] = str(response)
+    trace_payload["image_output_file"] = str(image_output_file)
+    _write_pic_trace(trace_output_file, trace_payload)
+    _log_pic_stage(
+        "picedit_completed",
+        source=image_path,
+        original_prompt=prompt,
+        refined_prompt=refined_prompt,
+        elapsed_seconds=cast(float, trace_payload["total_elapsed_seconds"]),
+        token_usage=image_token_usage,
+        output_file=image_output_file,
+    )
+    console.print("[picedit] 图片修改完成，开始写入结果文件...", style="cyan")
+    logger.info("图片修改完成: image_output=%s trace_output=%s", image_output_file, trace_output_file)
 
     return CodexPicResult(
         output_dir=output_dir,

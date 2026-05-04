@@ -99,6 +99,6 @@ codex:
   output_dir: "output/codex"
   timeout_seconds: 60
   pic_size: "1024x1024"
-  pic_quality: "high"
+  pic_quality: "medium"
   pic_output_format: "png"
   pic_response_format: "b64_json"
