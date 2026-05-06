@@ -1,0 +1,12 @@
+bill:
+  path: "tests/assets/bill/jd-220.csv"
+  from: "yy"
+  source: "京东"
+
+codex:
+  path: "tests/assets/codex/m1.md"
+
+fetch:
+  urls:
+    - "https://mp.weixin.qq.com/s/Jac9uhA6zE1OsIYDGjr9-g"
+    - "https://mp.weixin.qq.com/s/Iu9g7Ol8jLgtXu18QxMwOg"

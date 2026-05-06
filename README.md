@@ -105,3 +105,67 @@ beartools bill analysis "/path/to/normalized.xlsx"
 - 输出文件路径
 - 总行数
 - 分析失败行数
+
+## CLI 集成测试
+
+项目内提供了一组真实 CLI 集成测试与配套 skill，用于验证顶层命令在真实配置、真实文件、本地服务、外网和真实凭据条件下是否仍然可用。
+
+### 相关文件
+
+- 测试入口：`tests/test_cli_integration_commands.py`
+- 测试资产索引：`tests/assets/cli_integration_assets.yaml`
+- 项目内 skill：`skills/testing-cli-integrations/SKILL.md`
+
+### 分组说明
+
+- `core`：本地、低副作用、适合频繁运行
+  - `doctor`
+  - `record`
+  - `markdown`
+- `live`：依赖真实服务、外网或凭据
+  - `bill`
+  - `siyuan`
+  - `fetch`
+  - `gmail`
+  - `codex`
+
+说明：
+
+- `clear` 不在这组集成测试覆盖范围内
+- `fetch` 集成测试固定使用 `--no-upload`，避免写入思源
+- `live` 命令会真实执行；如果本地服务未启动、凭据不可用或上游环境异常，测试会 `skip` 并给出原因
+
+### 运行方式
+
+`core` 全量：
+
+```bash
+BEARTOOLS_INTEGRATION_GROUP=core uv run pytest tests/test_cli_integration_commands.py::test_selected_integration_case -v
+```
+
+`live` 全量：
+
+```bash
+BEARTOOLS_INTEGRATION_GROUP=live uv run pytest tests/test_cli_integration_commands.py::test_selected_integration_case -v
+```
+
+`all` 全量：
+
+```bash
+BEARTOOLS_INTEGRATION_GROUP=all uv run pytest tests/test_cli_integration_commands.py::test_selected_integration_case -v
+```
+
+`smoke` 模式：
+
+```bash
+BEARTOOLS_INTEGRATION_GROUP=all BEARTOOLS_SMOKE=1 BEARTOOLS_SMOKE_SAMPLE=3 BEARTOOLS_SMOKE_SEED=20260506 uv run pytest tests/test_cli_integration_commands.py::test_selected_integration_case -v
+```
+
+### 测试资产
+
+当前仓库内已固定的测试输入包括：
+
+- `tests/assets/bill/jd-220.csv`
+- `tests/assets/codex/m1.md`
+
+对应路径与参数以 `tests/assets/cli_integration_assets.yaml` 为准。
