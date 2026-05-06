@@ -150,6 +150,21 @@ class TestDoctorCommand:
 
         assert result.duration == 1.5
 
+    def test_print_summary_uses_overview_style(self, monkeypatch) -> None:
+        module = _load_doctor_command_module()
+        printed: list[object] = []
+
+        class FakeConsole:
+            def print(self, *args) -> None:
+                printed.extend(args)
+
+        monkeypatch.setattr(module, "console", FakeConsole())
+
+        module.print_summary(success_count=2, failure_count=1, warning_count=1)
+
+        assert len(printed) == 1
+        assert str(printed[0]) == "🏁 检查总览：共 4 项 ✓ 2 成功 ✗ 1 失败 ⚠ 1 警告"
+
 
 class TestGooglePingCheck:
     def test_default_targets_include_baidu(self) -> None:
@@ -189,9 +204,10 @@ class TestGooglePingCheck:
         result = await module.GooglePingCheck().run()
 
         assert result.status == module.CheckStatus.FAILURE
-        assert result.message == "科学上网检查失败（2/6）"
+        assert result.message == "科学上网检查失败：2/6（阈值 3）"
         assert result.detail == "\n".join(
             [
+                "汇总：成功 2，失败 4",
                 "google: 成功 200",
                 "youtube: 成功 200",
                 "facebook: 连接失败",
@@ -236,9 +252,10 @@ class TestGooglePingCheck:
         result = await module.GooglePingCheck().run()
 
         assert result.status == module.CheckStatus.SUCCESS
-        assert result.message == "科学上网检查通过（3/6）"
+        assert result.message == "科学上网检查通过：3/6（阈值 3）"
         assert result.detail == "\n".join(
             [
+                "汇总：成功 3，失败 3",
                 "google: 成功 204",
                 "youtube: 成功 200",
                 "facebook: 成功 200",
@@ -283,9 +300,10 @@ class TestGooglePingCheck:
         result = await module.GooglePingCheck().run()
 
         assert result.status == module.CheckStatus.FAILURE
-        assert result.message == "科学上网检查失败（2/6）"
+        assert result.message == "科学上网检查失败：2/6（阈值 3）"
         assert result.detail == "\n".join(
             [
+                "汇总：成功 2，失败 4",
                 "google: 成功 204",
                 "youtube: 成功 200",
                 "facebook: DNS 解析失败",
@@ -446,7 +464,7 @@ class TestGooglePingCheck:
         release.set()
         result = await task
 
-        assert result.detail == "google: 成功 200\nyoutube: 成功 200\nfacebook: 成功 200"
+        assert result.detail == "汇总：成功 3，失败 0\ngoogle: 成功 200\nyoutube: 成功 200\nfacebook: 成功 200"
 
 
 class TestOpenCliSummary:
@@ -527,7 +545,7 @@ class TestOpenCliRun:
         result = await module.OpenCliCheck().run()
 
         full_output = f"STDOUT:\n{long_output}"
-        assert result.detail == module._summarize_output(full_output)
+        assert result.detail == f"汇总：命令执行成功\n{module._summarize_output(full_output)}"
         assert captured["msg"] == "opencli doctor 完整输出:\n%s"
         assert captured["args"] == (full_output,)
         assert captured.get("kwargs", {}) == {}
@@ -559,7 +577,7 @@ class TestOpenCliRun:
 
         result = await module.OpenCliCheck().run()
 
-        assert result.detail == module._summarize_output("Timeout after 10 seconds\n")
+        assert result.detail == f"汇总：命令执行超时\n{module._summarize_output('Timeout after 10 seconds\n')}"
         assert captured == {}
 
 
@@ -567,38 +585,51 @@ class TestDoctorLLMCheck:
     @pytest.mark.asyncio
     async def test_single_healthy_node_success(self) -> None:
         check_module, _ = _load_llm_modules()
-        node = _FakeRuntimeNode(name="node-a", base_url="https://a.example.com/v1", model="gpt-4o-mini")
+        large_node = _FakeRuntimeNode(name="large-a", base_url="https://a.example.com/v1", model="gpt-5")
+        small_node = _FakeRuntimeNode(name="small-a", base_url="https://b.example.com/v1", model="gpt-4o-mini")
 
         with (
-            patch("beartools.commands.doctor.checks.llm._collect_configured_nodes", return_value=[node]),
+            patch(
+                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
+                side_effect=[[large_node], [small_node]],
+            ),
             patch("beartools.commands.doctor.checks.llm._probe_node", return_value=None),
         ):
             result = await check_module.LLMCheck().run()
 
         assert result.name == "llm"
         assert result.status == check_module.CheckStatus.SUCCESS
-        assert result.message == "检测到 1 个可用 LLM 节点，0 个不可用"
-        assert result.detail == "✅ 可用节点：\n  node-a | gpt-4o-mini | https://a.example.com/v1"
+        assert result.message == "LLM 节点检查通过：large 1/1，small 1/1"
+        assert result.detail == (
+            "汇总：可用 2，不可用 0\n"
+            "✅ large 可用节点：\n"
+            "  large-a | gpt-5 | https://a.example.com/v1\n"
+            "✅ small 可用节点：\n"
+            "  small-a | gpt-4o-mini | https://b.example.com/v1"
+        )
 
     @pytest.mark.asyncio
     async def test_multiple_healthy_nodes_success(self) -> None:
         check_module, _ = _load_llm_modules()
-        nodes = [
-            _FakeRuntimeNode(name="primary", base_url="https://a.example.com/v1", model="gpt-4.1-mini"),
-            _FakeRuntimeNode(name="backup", base_url="https://b.example.com/v1", model="gpt-4o-mini"),
-        ]
+        large_nodes = [_FakeRuntimeNode(name="primary", base_url="https://a.example.com/v1", model="gpt-4.1-mini")]
+        small_nodes = [_FakeRuntimeNode(name="backup", base_url="https://b.example.com/v1", model="gpt-4o-mini")]
 
         with (
-            patch("beartools.commands.doctor.checks.llm._collect_configured_nodes", return_value=nodes),
+            patch(
+                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
+                side_effect=[large_nodes, small_nodes],
+            ),
             patch("beartools.commands.doctor.checks.llm._probe_node", return_value=None),
         ):
             result = await check_module.LLMCheck().run()
 
         assert result.status == check_module.CheckStatus.SUCCESS
-        assert result.message == "检测到 2 个可用 LLM 节点，0 个不可用"
+        assert result.message == "LLM 节点检查通过：large 1/1，small 1/1"
         assert result.detail == (
-            "✅ 可用节点：\n"
+            "汇总：可用 2，不可用 0\n"
+            "✅ large 可用节点：\n"
             "  primary | gpt-4.1-mini | https://a.example.com/v1\n"
+            "✅ small 可用节点：\n"
             "  backup | gpt-4o-mini | https://b.example.com/v1"
         )
 
@@ -606,7 +637,10 @@ class TestDoctorLLMCheck:
     async def test_initialization_error_returns_failure(self) -> None:
         check_module, _ = _load_llm_modules()
 
-        with patch("beartools.commands.doctor.checks.llm._collect_configured_nodes", return_value=[]):
+        with patch(
+            "beartools.commands.doctor.checks.llm._collect_configured_nodes",
+            side_effect=[[], []],
+        ):
             result = await check_module.LLMCheck().run()
 
         assert result.status == check_module.CheckStatus.FAILURE
@@ -616,10 +650,14 @@ class TestDoctorLLMCheck:
     @pytest.mark.asyncio
     async def test_no_healthy_node_returns_failure(self) -> None:
         check_module, _ = _load_llm_modules()
-        node = _FakeRuntimeNode(name="node-a", base_url="https://a.example.com/v1", model="gpt-4o-mini")
+        large_node = _FakeRuntimeNode(name="large-a", base_url="https://a.example.com/v1", model="gpt-5")
+        small_node = _FakeRuntimeNode(name="small-a", base_url="https://b.example.com/v1", model="gpt-4o-mini")
 
         with (
-            patch("beartools.commands.doctor.checks.llm._collect_configured_nodes", return_value=[node]),
+            patch(
+                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
+                side_effect=[[large_node], [small_node]],
+            ),
             patch(
                 "beartools.commands.doctor.checks.llm._probe_node",
                 side_effect=RuntimeError("没有可用的健康节点"),
@@ -628,16 +666,25 @@ class TestDoctorLLMCheck:
             result = await check_module.LLMCheck().run()
 
         assert result.status == check_module.CheckStatus.FAILURE
-        assert result.message == "LLM 健康检查失败：没有可用的健康节点"
-        assert result.detail == "❌ node-a(https://a.example.com/v1, gpt-4o-mini): 没有可用的健康节点"
+        assert result.message == "LLM 节点检查失败：large 0/1，small 0/1"
+        assert result.detail == (
+            "汇总：可用 0，不可用 2\n"
+            "❌ large 不可用节点：\n"
+            "  large-a(https://a.example.com/v1, gpt-5): 没有可用的健康节点\n"
+            "❌ small 不可用节点：\n"
+            "  small-a(https://b.example.com/v1, gpt-4o-mini): 没有可用的健康节点"
+        )
 
     @pytest.mark.asyncio
     async def test_unexpected_error_returns_failure(self) -> None:
         check_module, _ = _load_llm_modules()
-        node = _FakeRuntimeNode(name="node-a", base_url="https://a.example.com/v1", model="gpt-4o-mini")
+        node = _FakeRuntimeNode(name="small-a", base_url="https://a.example.com/v1", model="gpt-4o-mini")
 
         with (
-            patch("beartools.commands.doctor.checks.llm._collect_configured_nodes", return_value=[node]),
+            patch(
+                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
+                side_effect=[[], [node]],
+            ),
             patch(
                 "beartools.commands.doctor.checks.llm._probe_node",
                 side_effect=RuntimeError("Error code: 429 - rate limit exceeded"),
@@ -646,7 +693,8 @@ class TestDoctorLLMCheck:
             result = await check_module.LLMCheck().run()
 
         assert result.status == check_module.CheckStatus.FAILURE
-        assert result.message == "LLM 健康检查失败：没有可用的健康节点"
+        assert result.message == "LLM 节点检查失败：large 0/0，small 0/1"
         assert (
-            result.detail == "❌ node-a(https://a.example.com/v1, gpt-4o-mini): Error code: 429 - rate limit exceeded"
+            result.detail
+            == "汇总：可用 0，不可用 1\n❌ small 不可用节点：\n  small-a(https://a.example.com/v1, gpt-4o-mini): Error code: 429 - rate limit exceeded"
         )

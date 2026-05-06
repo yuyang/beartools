@@ -68,25 +68,25 @@ siyuan:
 # 注意：此段为样例配置，字段必须与 src/beartools/config.py 中的 AgentNodeConfig/AgentConfig 完全一致
 # 可用字段：name、provider、base_url、model、api_key、extra_headers、timeout_seconds
 # 说明：
-#   - agent.primary 为必填节点（当存在 agent 段时），primary 节点会作为主目标发送请求，
-#     同时也会进入随机健康池参与轮选
-#   - agent.candidates 是整列表替换（即配置中的整个候选列表将被解析器替换），不是增量追加
+#   - agent.large / agent.small 都是必填非空列表
+#   - large 表示偏大、偏慢的模型池；small 表示偏小、偏快的模型池
+#   - 运行时按列表顺序选择第一个可用节点，对应列表全部不可用则报错
 #   - 样例中的 api_key 仅为占位引用，请在生产环境使用 secrets 或环境变量注入真实密钥
 agent:
-  primary:
-    name: "primary"
-    provider: "openai"
-    base_url: "https://api.example.com/v1"
-    model: "gpt-4.1-mini"
-    api_key: "@get agent.primary.key"
-    extra_headers: {}
-    timeout_seconds: 30
-  candidates:
-    - name: "candidate-1"
+  large:
+    - name: "large-1"
+      provider: "openai"
+      base_url: "https://api.example.com/v1"
+      model: "gpt-5"
+      api_key: "@get agent.openrouter.key"
+      extra_headers: {}
+      timeout_seconds: 30
+  small:
+    - name: "small-1"
       provider: "openrouter"
       base_url: "https://api-backup.example.com/v1"
       model: "gpt-4.1-mini"
-      api_key: "@get agent.candidate_1.key"
+      api_key: "@get agent.openrouter.key"
       extra_headers: {}
       timeout_seconds: 30
 

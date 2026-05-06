@@ -123,14 +123,20 @@ class GooglePingCheck(BaseCheck):
             tasks = [asyncio.create_task(self._check_target(session, target, timeout)) for target in targets]
             results = await asyncio.gather(*tasks)
         success_count = sum(1 for result in results if result.ok)
-        detail = "\n".join(f"{result.label}: {result.summary}" for result in results)
+        failure_count = len(results) - success_count
+        detail = "\n".join(
+            [
+                f"汇总：成功 {success_count}，失败 {failure_count}",
+                *[f"{result.label}: {result.summary}" for result in results],
+            ]
+        )
 
         duration = time.time() - start_time
         if success_count >= success_threshold:
             return CheckResult(
                 name=self.name,
                 status=CheckStatus.SUCCESS,
-                message=f"科学上网检查通过（{success_count}/{len(results)}）",
+                message=f"科学上网检查通过：{success_count}/{len(results)}（阈值 {success_threshold}）",
                 duration=duration,
                 detail=detail,
             )
@@ -138,7 +144,7 @@ class GooglePingCheck(BaseCheck):
         return CheckResult(
             name=self.name,
             status=CheckStatus.FAILURE,
-            message=f"科学上网检查失败（{success_count}/{len(results)}）",
+            message=f"科学上网检查失败：{success_count}/{len(results)}（阈值 {success_threshold}）",
             duration=duration,
             detail=detail,
         )

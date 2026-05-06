@@ -152,9 +152,8 @@ def print_summary(success_count: int, failure_count: int, warning_count: int) ->
         failure_count: 失败数量
         warning_count: 警告数量
     """
-    console.print()
     total = success_count + failure_count + warning_count
-    summary_text = f"检查完成: 共 {total} 项检查"
+    summary_text = f"检查总览：共 {total} 项"
 
     parts: list[Text] = []
     parts.append(Text("🏁 ", style="bold blue"))

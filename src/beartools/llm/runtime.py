@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Final, Protocol, cast, runtime_checkable
+from typing import Final, Literal, Protocol, cast, runtime_checkable
 
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
@@ -12,6 +12,7 @@ from beartools.config import AgentNodeConfig, get_config
 
 _PROBE_MESSAGES: Final[list[dict[str, str]]] = [{"role": "user", "content": "ping"}]
 _PROBE_FAILURE_MESSAGE_KEYWORDS: Final[tuple[str, ...]] = ()
+AgentTier = Literal["large", "small"]
 
 
 class LLMRuntimeError(RuntimeError):
@@ -62,51 +63,72 @@ class RuntimeNode:
 class LLRuntime:
     """公开运行时类型，供工厂与后续测试共享状态。"""
 
-    healthy_nodes: list[RuntimeNode]
-    _active_fingerprint: str | None = field(init=False, default=None, repr=False)
-    _failed_fingerprints: set[str] = field(init=False, default_factory=set, repr=False)
+    large_nodes: list[RuntimeNode]
+    small_nodes: list[RuntimeNode]
+    _active_fingerprints: dict[AgentTier, str | None] = field(init=False, repr=False)
+    _failed_fingerprints: dict[AgentTier, set[str]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not self.healthy_nodes:
-            raise LLMRuntimeNoHealthyNodeError("LLM 运行时初始化失败：没有可用的健康节点")
-        self._active_fingerprint = self._choose_active_fingerprint()
+        if not self.large_nodes:
+            raise LLMRuntimeNoHealthyNodeError("LLM 运行时初始化失败：large 没有可用的健康节点")
+        if not self.small_nodes:
+            raise LLMRuntimeNoHealthyNodeError("LLM 运行时初始化失败：small 没有可用的健康节点")
+        self._failed_fingerprints = {"large": set(), "small": set()}
+        self._active_fingerprints = {
+            "large": self._choose_active_fingerprint("large"),
+            "small": self._choose_active_fingerprint("small"),
+        }
 
     @property
-    def active_node(self) -> RuntimeNode:
-        active_fingerprint = self._active_fingerprint
-        if active_fingerprint is None:
-            raise LLMRuntimeNoHealthyNodeError("LLM 运行时当前没有可用的活动节点")
-        for node in self.healthy_nodes:
-            if node.fingerprint == active_fingerprint:
-                return node
-        raise LLMRuntimeNoHealthyNodeError("LLM 运行时当前活动节点不存在于健康节点池中")
+    def healthy_nodes(self) -> list[RuntimeNode]:
+        """兼容旧接口，默认返回 small 节点池。"""
+
+        return self.small_nodes
 
     @property
     def available_nodes(self) -> list[RuntimeNode]:
-        return [node for node in self.healthy_nodes if node.fingerprint not in self._failed_fingerprints]
+        """兼容旧接口，默认返回 small 可用节点池。"""
 
-    def get_active_node(self) -> RuntimeNode:
-        return self.active_node
+        return self.available_nodes_for_tier("small")
 
-    def mark_node_failed(self, node: RuntimeNode, error: BaseException | None = None) -> bool:
+    def get_active_node(self, tier: AgentTier = "small") -> RuntimeNode:
+        active_fingerprint = self._active_fingerprints[tier]
+        if active_fingerprint is None:
+            raise LLMRuntimeNoHealthyNodeError(f"LLM 运行时当前 {tier} 没有可用的活动节点")
+        for node in self._nodes_for_tier(tier):
+            if node.fingerprint == active_fingerprint:
+                return node
+        raise LLMRuntimeNoHealthyNodeError(f"LLM 运行时当前 {tier} 活动节点不存在于健康节点池中")
+
+    def available_nodes_for_tier(self, tier: AgentTier) -> list[RuntimeNode]:
+        return [node for node in self._nodes_for_tier(tier) if node.fingerprint not in self._failed_fingerprints[tier]]
+
+    def mark_node_failed(
+        self, node: RuntimeNode, error: BaseException | None = None, tier: AgentTier = "small"
+    ) -> bool:
         """仅更新后续默认节点，不对当前失败请求做透明重放。"""
         if error is not None and not should_invalidate_node(error):
             return False
 
-        if node.fingerprint in self._failed_fingerprints:
+        if node.fingerprint in self._failed_fingerprints[tier]:
             return False
 
-        self._failed_fingerprints.add(node.fingerprint)
-        if self._active_fingerprint == node.fingerprint:
-            self._active_fingerprint = self._choose_active_fingerprint(exclude_fingerprint=node.fingerprint)
+        self._failed_fingerprints[tier].add(node.fingerprint)
+        if self._active_fingerprints[tier] == node.fingerprint:
+            self._active_fingerprints[tier] = self._choose_active_fingerprint(
+                tier, exclude_fingerprint=node.fingerprint
+            )
         return True
 
     def start(self) -> None:
         return None
 
-    def _choose_active_fingerprint(self, exclude_fingerprint: str | None = None) -> str | None:
-        for node in self.healthy_nodes:
-            if node.fingerprint in self._failed_fingerprints:
+    def _nodes_for_tier(self, tier: AgentTier) -> list[RuntimeNode]:
+        return self.large_nodes if tier == "large" else self.small_nodes
+
+    def _choose_active_fingerprint(self, tier: AgentTier, exclude_fingerprint: str | None = None) -> str | None:
+        for node in self._nodes_for_tier(tier):
+            if node.fingerprint in self._failed_fingerprints[tier]:
                 continue
             if node.fingerprint == exclude_fingerprint:
                 continue
@@ -192,17 +214,9 @@ def _deduplicate_nodes(config_nodes: list[AgentNodeConfig]) -> list[RuntimeNode]
     return deduplicated
 
 
-def _is_configured_node(config_node: AgentNodeConfig) -> bool:
-    return bool(config_node.name.strip() and config_node.base_url.strip() and config_node.model.strip())
-
-
-def _collect_configured_nodes() -> list[RuntimeNode]:
+def _collect_configured_nodes(tier: AgentTier) -> list[RuntimeNode]:
     agent_config = get_config().agent
-    config_nodes = [
-        config_node
-        for config_node in [agent_config.primary, *agent_config.candidates]
-        if _is_configured_node(config_node)
-    ]
+    config_nodes = agent_config.large if tier == "large" else agent_config.small
     return _deduplicate_nodes(config_nodes)
 
 
@@ -264,25 +278,11 @@ def _sanitize_probe_failure_reason(error: BaseException) -> str:
     return type(error).__name__
 
 
-def _build_healthy_node_pool() -> list[RuntimeNode]:
-    agent_config = get_config().agent
-    configured_nodes = _collect_configured_nodes()
+def _build_healthy_node_pool(tier: AgentTier) -> list[RuntimeNode]:
+    configured_nodes = _collect_configured_nodes(tier)
     if not configured_nodes:
-        raise LLMRuntimeInitializationError("LLM 运行时初始化失败：未配置任何 agent 节点")
+        raise LLMRuntimeInitializationError(f"LLM 运行时初始化失败：{tier} 未配置任何 agent 节点")
 
-    # 优先只检查 primary 节点，只要 primary 可用就可以了，candidates 节点后续使用时再检查
-    primary_config_node = agent_config.primary
-    if _is_configured_node(primary_config_node):
-        primary_node = RuntimeNode.from_config(primary_config_node)
-        try:
-            _probe_node(primary_node)
-            # primary 节点成功，直接返回包含 primary 的列表
-            return [primary_node]
-        except Exception:
-            # primary 失败，继续尝试其他节点
-            pass
-
-    # 如果 primary 不可用，尝试其他节点
     healthy_nodes: list[RuntimeNode] = []
     failed_reasons: list[str] = []
     for node in configured_nodes:
@@ -310,13 +310,15 @@ def _build_healthy_node_pool() -> list[RuntimeNode]:
 
     if not healthy_nodes:
         reason_text = "；".join(failed_reasons) if failed_reasons else "未知原因"
-        raise LLMRuntimeNoHealthyNodeError(f"LLM 运行时初始化失败：没有可用的健康节点，探测失败原因：{reason_text}")
+        raise LLMRuntimeNoHealthyNodeError(
+            f"LLM 运行时初始化失败：{tier} 没有可用的健康节点，探测失败原因：{reason_text}"
+        )
 
     return healthy_nodes
 
 
 def create_llm_runtime() -> LLRuntime:
-    return LLRuntime(healthy_nodes=_build_healthy_node_pool())
+    return LLRuntime(large_nodes=_build_healthy_node_pool("large"), small_nodes=_build_healthy_node_pool("small"))
 
 
 def get_llm_runtime() -> LLRuntime:
@@ -330,13 +332,13 @@ def get_llm_runtime() -> LLRuntime:
     return _runtime_instance
 
 
-def get_active_llm_node() -> RuntimeNode:
-    return get_llm_runtime().get_active_node()
+def get_active_llm_node(tier: AgentTier = "small") -> RuntimeNode:
+    return get_llm_runtime().get_active_node(tier)
 
 
-def mark_active_llm_node_failed(error: BaseException | None = None) -> bool:
+def mark_active_llm_node_failed(error: BaseException | None = None, tier: AgentTier = "small") -> bool:
     runtime = get_llm_runtime()
-    return runtime.mark_node_failed(runtime.get_active_node(), error=error)
+    return runtime.mark_node_failed(runtime.get_active_node(tier), error=error, tier=tier)
 
 
 def reset_llm_runtime() -> None:

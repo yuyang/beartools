@@ -45,6 +45,14 @@ def _build_full_output(result: CommandResult) -> str:
     return "\n".join(parts).strip()
 
 
+def _prepend_detail_summary(summary: str, detail: str) -> str:
+    """为详情补充统一的汇总前缀。"""
+
+    if not detail:
+        return summary
+    return f"{summary}\n{detail}"
+
+
 @register_check
 class OpenCliCheck(BaseCheck):
     """OpenCli 检查项
@@ -133,7 +141,7 @@ class OpenCliCheck(BaseCheck):
                     status=CheckStatus.SUCCESS,
                     message="opencli 已安装且 doctor 执行成功",
                     duration=duration,
-                    detail=summary_output or None,
+                    detail=_prepend_detail_summary("汇总：命令执行成功", summary_output) if summary_output else None,
                 )
 
             # 非零返回码
@@ -143,7 +151,7 @@ class OpenCliCheck(BaseCheck):
                     status=CheckStatus.FAILURE,
                     message=f"opencli doctor 执行失败，返回码 {result.return_code}",
                     duration=duration,
-                    detail=summary_output or None,
+                    detail=_prepend_detail_summary("汇总：命令执行失败", summary_output) if summary_output else None,
                 )
             else:
                 return CheckResult(
@@ -151,7 +159,7 @@ class OpenCliCheck(BaseCheck):
                     status=CheckStatus.WARNING,
                     message=f"opencli doctor 返回非零码 {result.return_code}，但配置为不强制失败",
                     duration=duration,
-                    detail=summary_output or None,
+                    detail=_prepend_detail_summary("汇总：命令返回非零码", summary_output) if summary_output else None,
                 )
 
         except TimeoutError:
@@ -164,7 +172,7 @@ class OpenCliCheck(BaseCheck):
                 status=CheckStatus.FAILURE if fail_on_error else CheckStatus.WARNING,
                 message=f"opencli doctor 执行超时（{timeout} 秒）",
                 duration=duration,
-                detail=summary_output or None,
+                detail=_prepend_detail_summary("汇总：命令执行超时", summary_output) if summary_output else None,
             )
         except Exception as e:
             duration = time.time() - start_time

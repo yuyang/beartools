@@ -85,8 +85,8 @@ class AgentNodeConfig:
 class AgentConfig:
     """智能体配置"""
 
-    primary: AgentNodeConfig = field(default_factory=AgentNodeConfig)
-    candidates: list[AgentNodeConfig] = field(default_factory=list)
+    large: list[AgentNodeConfig] = field(default_factory=list)
+    small: list[AgentNodeConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -287,6 +287,17 @@ def _parse_agent_node_config(node_settings: object, path: str) -> AgentNodeConfi
     )
 
 
+def _parse_agent_node_list(node_list_settings: object, path: str) -> list[AgentNodeConfig]:
+    """解析节点列表配置。"""
+
+    node_list = _as_list(node_list_settings, path)
+    if not node_list:
+        raise RuntimeError(f"{path} 必须是非空列表")
+    return [
+        _parse_agent_node_config(node_settings, f"{path}[{index}]") for index, node_settings in enumerate(node_list)
+    ]
+
+
 def _parse_agent_config(settings: _SettingsLike) -> AgentConfig:
     """解析智能体配置"""
     agent_settings = settings.get("agent")
@@ -294,19 +305,15 @@ def _parse_agent_config(settings: _SettingsLike) -> AgentConfig:
         return AgentConfig()
     agent_dict = _as_dict(agent_settings, "agent")
 
-    if "primary" not in agent_dict:
-        raise RuntimeError("agent.primary 必填")
-    primary = _parse_agent_node_config(agent_dict["primary"], "agent.primary")
+    if "large" not in agent_dict:
+        raise RuntimeError("agent.large 必填")
+    if "small" not in agent_dict:
+        raise RuntimeError("agent.small 必填")
 
-    candidates: list[AgentNodeConfig] = []
-    if "candidates" in agent_dict:
-        candidates_val = agent_dict["candidates"]
-        if candidates_val is None:
-            raise RuntimeError("agent.candidates 必须是列表")
-        for index, candidate_settings in enumerate(_as_list(candidates_val, "agent.candidates")):
-            candidates.append(_parse_agent_node_config(candidate_settings, f"agent.candidates[{index}]"))
+    large = _parse_agent_node_list(agent_dict["large"], "agent.large")
+    small = _parse_agent_node_list(agent_dict["small"], "agent.small")
 
-    return AgentConfig(primary=primary, candidates=candidates)
+    return AgentConfig(large=large, small=small)
 
 
 def _parse_gmail_config(settings: _SettingsLike) -> GmailConfig:

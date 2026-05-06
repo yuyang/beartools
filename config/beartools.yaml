@@ -45,39 +45,42 @@ doctor:
       timeout: 5
       fail_on_error: false
 
-# 智能体 (agent) 配置示例
-# 注意：此段为样例配置，字段必须与 src/beartools/config.py 中的 AgentNodeConfig/AgentConfig 完全一致
+# 智能体 (agent) 配置
 # 可用字段：name、provider、base_url、model、api_key、extra_headers、timeout_seconds
 # 说明：
-#   - agent.primary 为必填节点（当存在 agent 段时），primary 节点会作为主目标发送请求，
-#     同时也会进入随机健康池参与轮选
-#   - agent.candidates 是整列表替换（即配置中的整个候选列表将被解析器替换），不是增量追加
-#   - 样例中的 api_key 仅为占位符，请在生产环境使用环境变量或 secrets 注入真实密钥，样例必须使用占位文本如 REPLACE_ME
+#   - agent.large / agent.small 都是必填非空列表
+#   - large 表示偏大、偏慢的模型池
+#   - small 表示偏小、偏快的模型池
+#   - 运行时按列表顺序选择第一个可用节点，对应列表全部不可用则报错
 agent:
-  # 主节点（必填）
-  primary:
-    name: "zhizengzeng"
-    provider: "openai"
-    base_url: "https://api.zhizengzeng.com/v1"  # 必填：节点基础 URL
-    model: "gpt-5.4-mini"                 # 必填：模型标识
-    api_key: "@get agent.zhizengzeng.key"
-    timeout_seconds: 30
+  large:
+    - name: "naiba"
+      provider: "openai"
+      base_url: "https://api-xai.ainaibahub.com/v1"
+      model: "gpt-5.4"
+      api_key: "@get agent.naiba.key"
+      timeout_seconds: 30
+   
+    - name: "laozhang"
+      provider: "openai"
+      base_url: "https://api.laozhang.ai/v1"
+      model: "gpt-5.4"
+      api_key: "@get agent.laozhang.key"
+      timeout_seconds: 30
 
-  # 候选节点列表（可选）
-  # 注意：此处为整列表替换，parser 会把 candidates 解析为完整的候选集合
-  candidates:
-    - name: "candidate-1"
+  small:
+    - name: "small-1"
       provider: "openrouter"
-      base_url: "https://openrouter.ai/api/v1"
-      model: "openai/gpt-4.1-mini"
-      api_key: "@get agent.openrouter.key"
+      base_url: "https://api-xai.ainaibahub.com/v1"
+      model: "openai/gpt-5.4-mini"
+      api_key: "@get agent.naiba.key"
       extra_headers: {}
       timeout_seconds: 25
 
-    - name: "candidate-2"
+    - name: "small-2"
       provider: "openrouter"
       base_url: "https://openrouter.ai/api/v1"
-      model: "moonshotai/kimi-k2.6"
+      model: "openai/gpt-5.4-mini"
       api_key: "@get agent.openrouter.key"
       extra_headers:
         "X-Region": "cn"

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
+from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Protocol, cast
 from unittest.mock import Mock, patch
@@ -41,7 +44,7 @@ class _LLFactoryProtocol(Protocol):
 
 
 class _LLFactoryClass(Protocol):
-    def __call__(self) -> _LLFactoryProtocol: ...
+    def __call__(self, *, provider: str = ..., logger: object | None = ...) -> _LLFactoryProtocol: ...
 
 
 class _FactoryModule(Protocol):
@@ -53,8 +56,25 @@ class _FactoryModule(Protocol):
     def _supports_default_headers(self) -> bool: ...
 
 
-factory_module = cast(_FactoryModule, importlib.import_module("beartools.llm.factory"))
-runtime_module = cast(_RuntimeModule, importlib.import_module("beartools.llm.runtime"))
+def _load_module(module_name: str, relative_path: str) -> object:
+    existing_module = sys.modules.get(module_name)
+    if existing_module is not None:
+        return existing_module
+
+    module_path = Path(__file__).resolve().parents[1] / "src" / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载模块: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+runtime_module = cast(
+    _RuntimeModule, _load_module("beartools_llm_runtime_for_factory_tests", "beartools/llm/runtime.py")
+)
+factory_module = cast(_FactoryModule, _load_module("beartools_llm_factory_for_tests", "beartools/llm/factory.py"))
 
 
 def create_runtime_node(name: str, *, extra_headers: dict[str, str] | None = None) -> _RuntimeNodeProtocol:
@@ -74,9 +94,11 @@ class FakeRuntime:
     def __init__(self, node: _RuntimeNodeProtocol) -> None:
         self._node = node
         self.get_active_node_call_count = 0
+        self.requested_tiers: list[str] = []
 
-    def get_active_node(self) -> _RuntimeNodeProtocol:
+    def get_active_node(self, tier: str = "small") -> _RuntimeNodeProtocol:
         self.get_active_node_call_count += 1
+        self.requested_tiers.append(tier)
         if self.get_active_node_call_count > 1:
             raise AssertionError("factory 不应二次触发活动节点选择")
         return self._node
@@ -107,6 +129,7 @@ class TestLLFactory:
         async_openai = Mock(name="AsyncOpenAI")
         openai_chat_model = Mock(name="OpenAIChatModel", return_value="chat-model")
         openai_provider = Mock(name="OpenAIProvider", return_value="provider")
+        logger = Mock(name="logger")
 
         with (
             patch.object(factory_module, "get_llm_runtime", return_value=runtime),
@@ -120,10 +143,11 @@ class TestLLFactory:
                 ),
             ),
         ):
-            model = factory_module.LLFactory().create()
+            model = factory_module.LLFactory(logger=logger).create()
 
         assert model == "chat-model"
         assert runtime.get_active_node_call_count == 1
+        assert runtime.requested_tiers == ["small"]
         async_openai.assert_not_called()
         openai_provider.assert_called_once_with(base_url=node.base_url, api_key=node.api_key)
         openai_chat_model.assert_called_once_with(
@@ -153,7 +177,7 @@ class TestLLFactory:
                 ),
             ),
         ):
-            factory_module.LLFactory().create()
+            factory_module.LLFactory(logger=logger).create()
 
         logger.info.assert_called_once_with(
             "LLM 选择节点: name=%s provider=%s base_url=%s model=%s",
@@ -169,6 +193,7 @@ class TestLLFactory:
         async_openai = Mock(name="AsyncOpenAI", return_value="openai-client")
         openai_chat_model = Mock(name="OpenAIChatModel", return_value="chat-model")
         openai_provider = Mock(name="OpenAIProvider", return_value="provider")
+        logger = Mock(name="logger")
 
         with (
             patch.object(factory_module, "get_llm_runtime", return_value=runtime),
@@ -183,10 +208,11 @@ class TestLLFactory:
                 ),
             ),
         ):
-            model = factory_module.LLFactory().create()
+            model = factory_module.LLFactory(logger=logger).create()
 
         assert model == "chat-model"
         assert runtime.get_active_node_call_count == 1
+        assert runtime.requested_tiers == ["small"]
         async_openai.assert_called_once_with(
             base_url=node.base_url,
             api_key=node.api_key,
@@ -199,3 +225,27 @@ class TestLLFactory:
             provider="provider",
             settings={"timeout": 30.0},
         )
+
+    def test_factory_defaults_to_small_tier(self) -> None:
+        node = create_runtime_node("small-default")
+        runtime = FakeRuntime(node)
+        async_openai = Mock(name="AsyncOpenAI")
+        openai_chat_model = Mock(name="OpenAIChatModel", return_value="chat-model")
+        openai_provider = Mock(name="OpenAIProvider", return_value="provider")
+        logger = Mock(name="logger")
+
+        with (
+            patch.object(factory_module, "get_llm_runtime", return_value=runtime),
+            patch.object(
+                factory_module.importlib,
+                "import_module",
+                side_effect=create_import_module_side_effect(
+                    async_openai=async_openai,
+                    openai_chat_model=openai_chat_model,
+                    openai_provider=openai_provider,
+                ),
+            ),
+        ):
+            factory_module.LLFactory(logger=logger).create()
+
+        assert runtime.requested_tiers == ["small"]
