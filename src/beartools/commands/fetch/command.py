@@ -20,20 +20,20 @@ _siyuan_handler = SiyuanHandler()
 
 
 def _upload_to_siyuan(embed_results: list[EmbedResult]) -> None:
-    """将生成的Markdown文件上传到思源笔记"""
+    """将生成的 Markdown 文件上传到思源笔记"""
     config = get_config()
     target_notebook = config.siyuan.notebook
     target_path = config.siyuan.path
 
     if not target_notebook or not target_path:
         console.print("⚠️  思源笔记配置不完整，跳过自动上传", style="yellow")
-        console.print("请在配置文件中设置 siyuan.notebook 和 siyuan.path", style="dim")
+        console.print("请在配置文件中设置 `siyuan.notebook` 和 `siyuan.path`", style="dim")
         return
 
     try:
         for embed in embed_results:
             doc_id = asyncio.run(_siyuan_handler.upload_md(str(embed.out_file), target_notebook, target_path))
-            console.print(f"✅ 已上传到思源笔记，文档ID: {doc_id}", style="green")
+            console.print(f"✅ 已上传到思源笔记，文档 ID: {doc_id}", style="green")
     except SiyuanError as e:
         console.print(f"❌ 上传到思源笔记失败: {e}", style="red")
         if "连接" in str(e):
@@ -45,7 +45,7 @@ def fetch(
     url: str = typer.Argument(..., help="要抓取的 URL"),
     upload: bool = typer.Option(True, help="是否自动上传到思源笔记，默认开启"),
 ) -> None:
-    """根据 URL 抓取内容，目前支持 weixin.qq.com、x.com 和 twitter.com 域名"""
+    """根据 URL 抓取内容，目前支持 weixin.qq.com、x.com 和 twitter.com。"""
     try:
         result = asyncio.run(fetch_url(url))
     except ValueError as e:

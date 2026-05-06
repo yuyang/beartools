@@ -23,7 +23,7 @@ from beartools.logger import shutdown_logging
 # 创建主应用
 app = typer.Typer(
     name="beartools",
-    help="beartools - 自用工具集合",
+    help="beartools：自用工具集",
     add_completion=False,
 )
 
@@ -39,9 +39,11 @@ def main(ctx: typer.Context) -> None:
 
 # 注册doctor作为子命令
 @app.command(name="doctor", help="运行环境健康检查")  # type: ignore[misc]
-def doctor() -> None:
+def doctor(
+    run_llm: bool = typer.Option(False, "--run-llm", help="是否包含 LLM 检查项"),
+) -> None:
     """运行环境健康检查"""
-    doctor_command()
+    doctor_command(run_llm=run_llm)
 
 
 # 注册clear作为子命令
@@ -53,25 +55,25 @@ def clear() -> None:
 
 
 # 注册siyuan作为子命令
-app.add_typer(siyuan_app, name="siyuan", help="思源笔记相关操作")
+app.add_typer(siyuan_app, name="siyuan", help="思源笔记管理")
 
 # 注册record作为子命令
-app.add_typer(record_app, name="record", help="记录管理相关操作")
+app.add_typer(record_app, name="record", help="记录管理")
 
 # 注册markdown作为子命令
-app.add_typer(markdown_app, name="markdown", help="Markdown 文件处理相关操作")
+app.add_typer(markdown_app, name="markdown", help="Markdown 文件处理")
 
 # 注册bill作为子命令
-app.add_typer(bill_app, name="bill", help="账单处理相关操作，直接输入文件路径默认执行完整流程")
+app.add_typer(bill_app, name="bill", help="账单处理，直接输入文件路径时默认执行完整流程")
 
 # 注册fetch作为子命令
-app.command(name="fetch", help="根据URL抓取内容")(fetch)
+app.command(name="fetch", help="根据 URL 抓取内容")(fetch)
 
 # 注册gmail作为子命令
-app.add_typer(gmail_app, name="gmail", help="Gmail 邮件相关操作")
+app.add_typer(gmail_app, name="gmail", help="Gmail 邮件处理")
 
 # 注册codex作为子命令
-app.add_typer(codex_app, name="codex", help="Codex 相关操作")
+app.add_typer(codex_app, name="codex", help="Codex 工具")
 
 
 def _main_wrapper() -> None:

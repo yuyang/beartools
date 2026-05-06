@@ -9,14 +9,14 @@ from beartools.config import get_config
 from beartools.gmail import fetch_gmail_summary
 from beartools.logger import get_logger
 
-gmail_app = typer.Typer(help="Gmail 邮件相关操作", add_completion=False)
+gmail_app = typer.Typer(help="Gmail 邮件处理", add_completion=False)
 console = Console()
 logger = get_logger(__name__)
 
 
 def fetch(
-    days: int | None = typer.Option(None, "--days", min=1, help="抓取最近多少天的 INBOX 邮件，默认取配置值"),
-    max_results: int | None = typer.Option(None, "--max-results", min=1, help="最多处理多少封邮件，默认取配置值"),
+    days: int | None = typer.Option(None, "--days", min=1, help="抓取最近多少天的 INBOX 邮件，默认使用配置值"),
+    max_results: int | None = typer.Option(None, "--max-results", min=1, help="最多处理多少封邮件，默认使用配置值"),
 ) -> None:
     """抓取 Gmail 收件箱邮件。"""
 
@@ -42,4 +42,4 @@ def fetch(
     console.print(f"输出文件: {result.output_file}", style="green")
 
 
-gmail_app.command("fetch")(fetch)
+gmail_app.command("fetch", help="抓取 Gmail 收件箱摘要")(fetch)

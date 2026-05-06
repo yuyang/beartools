@@ -13,10 +13,10 @@ import typer
 from beartools.markdown import embed_images
 
 console = Console()
-app = typer.Typer(help="Markdown 文件处理相关操作")
+app = typer.Typer(help="Markdown 文件处理")
 
 
-@app.command(name="embed-images", help="将 Markdown 中的本地图片替换为 base64 内嵌")  # type: ignore
+@app.command(name="embed-images", help="将 Markdown 中的本地图片转换为 Base64 内嵌内容")  # type: ignore
 def embed_images_cmd(
     input_path: str = typer.Argument(..., help="输入目录或 .md 文件路径"),
     output_path: str = typer.Argument(..., help="输出目录路径"),

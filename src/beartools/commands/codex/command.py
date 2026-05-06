@@ -10,14 +10,14 @@ import typer
 from beartools.codex import run_codex_markdown
 from beartools.codex_pic import run_codex_pic, run_codex_picbatch, run_codex_picedit
 
-codex_app = typer.Typer(help="Codex 相关操作", add_completion=False)
+codex_app = typer.Typer(help="Codex 工具", add_completion=False)
 console = Console()
 
 
 def codex_run(
     md_path: Path = typer.Argument(..., help="本地 Markdown 文件路径"),  # noqa: B008
     output_file: Path | None = typer.Option(None, help="最终回答输出文件"),  # noqa: B008
-    trace_file: Path | None = typer.Option(None, help="trace 输出文件"),  # noqa: B008
+    trace_file: Path | None = typer.Option(None, help="Trace 输出文件"),  # noqa: B008
 ) -> None:
     """执行 Codex Markdown 任务。"""
 
@@ -32,7 +32,7 @@ def codex_run(
 
 
 def codex_pic(
-    md_path: Path = typer.Argument(..., help="input/codex 目录下的 Markdown 文件路径"),  # noqa: B008
+    md_path: Path = typer.Argument(..., help="`input/codex` 目录下的 Markdown 文件路径"),  # noqa: B008
     size: str | None = typer.Option(None, help="图片尺寸，如 1024x1024"),  # noqa: B008
     quality: str | None = typer.Option(None, help="图片质量，如 high"),  # noqa: B008
     output_format: str | None = typer.Option(None, help="输出格式，如 png"),  # noqa: B008
@@ -111,7 +111,7 @@ def codex_picedit(
     console.print(f"Trace 已写入: {result.trace_output_file}", style="green")
 
 
-codex_app.command("run")(codex_run)
-codex_app.command("pic")(codex_pic)
-codex_app.command("picbatch")(codex_picbatch)
-codex_app.command("picedit")(codex_picedit)
+codex_app.command("run", help="执行 Codex Markdown 任务")(codex_run)
+codex_app.command("pic", help="执行 Codex 图片生成任务")(codex_pic)
+codex_app.command("picbatch", help="批量执行 Codex 图片生成任务")(codex_picbatch)
+codex_app.command("picedit", help="执行 Codex 图片编辑任务")(codex_picedit)

@@ -60,7 +60,7 @@ class OpenCliCheck(BaseCheck):
     @property
     def description(self) -> str:
         """检查项描述"""
-        return "检查opencli是否已安装并运行opencli doctor"
+        return "检查 opencli 是否已安装，并运行 opencli doctor"
 
     async def _run_command(self, command: list[str], timeout: int) -> CommandResult:
         """执行外部命令并捕获输出

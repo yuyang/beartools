@@ -14,7 +14,7 @@ import typer
 from beartools.record import Record, record_manager
 
 console = Console()
-app = typer.Typer(help="记录管理相关操作")
+app = typer.Typer(help="记录管理")
 
 
 async def _get_all_async() -> list[Record]:

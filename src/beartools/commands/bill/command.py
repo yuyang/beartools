@@ -118,13 +118,13 @@ class _BillRunProgressReporter:
 
 
 # 标准 Typer app，包含所有子命令
-app = typer.Typer(help="账单处理相关操作，直接输入文件路径默认执行完整流程")
+app = typer.Typer(help="账单处理，直接输入文件路径时默认执行完整流程")
 
 
 @app.command(name="normalize", help="将单个账单文件归一化为统一 Excel")  # type: ignore[misc]
 def normalize_bill(
     input_path: str = typer.Argument(..., help="输入账单文件路径，支持 CSV/Excel"),
-    from_value: str | None = typer.Argument(None, help="from 字段值，同时参与输出文件名拼接，默认值：yy"),
+    from_value: str | None = typer.Argument(None, help="from 字段值，同时用于拼接输出文件名，默认值：yy"),
 ) -> None:
     """将单个账单文件归一化为统一 Excel。"""
 
@@ -163,9 +163,9 @@ def normalize_bill(
         console.print("\n✅ 归一化完成", style="green")
 
 
-@app.command(name="analysis", help="分析归一化后的账单文件，添加用途和归属人列")  # type: ignore[misc]
+@app.command(name="analysis", help="分析归一化后的账单文件，并补充用途与归属人列")  # type: ignore[misc]
 def analyze_bill(
-    input_path: str = typer.Argument(..., help="归一化后的账单xlsx文件路径"),
+    input_path: str = typer.Argument(..., help="归一化后的账单 xlsx 文件路径"),
 ) -> None:
     """分析归一化后的账单文件，每行自动分析交易用途和归属人并输出结果文件。"""
 
@@ -184,7 +184,7 @@ def analyze_bill(
 @app.command(name="run", help="完整流程：原始账单 → 归一化 → 分析")  # type: ignore[misc]
 def run_bill(
     input_path: str = typer.Argument(..., help="输入账单文件路径，支持 CSV/Excel"),
-    from_value: str | None = typer.Argument(None, help="from 字段值，同时参与输出文件名拼接，默认值：yy"),
+    from_value: str | None = typer.Argument(None, help="from 字段值，同时用于拼接输出文件名，默认值：yy"),
 ) -> None:
     """完整流程：原始账单 → 归一化 → 分析。"""
 
