@@ -215,6 +215,39 @@ def test_codex_pic_passes_cli_options(tmp_path: Path) -> None:
     }
 
 
+def test_codex_pic_plays_system_notification_sound_after_success(tmp_path: Path) -> None:
+    md_file = tmp_path / "input" / "codex" / "cover.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成图片", encoding="utf-8")
+
+    def fake_run_codex_pic(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        assert md_path == md_file
+        assert size is None
+        assert quality is None
+        assert output_format is None
+        output_dir = Path("output") / "pic" / "cover"
+        return CodexPicResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "cover.png",
+            trace_output_file=output_dir / "cover.trace.log",
+        )
+
+    with (
+        patch("beartools.commands.codex.command.run_codex_pic", side_effect=fake_run_codex_pic),
+        patch("beartools.commands.codex.command.play_system_notification_sound") as mock_play_system_notification_sound,
+    ):
+        result = runner.invoke(app, ["codex", "pic", str(md_file)])
+
+    assert result.exit_code == 0
+    mock_play_system_notification_sound.assert_called_once_with()
+
+
 def test_codex_picbatch_prints_mixed_results_and_keeps_exit_zero(tmp_path: Path) -> None:
     first_file = tmp_path / "first.md"
     second_file = tmp_path / "second.md"
@@ -259,6 +292,52 @@ def test_codex_picbatch_prints_mixed_results_and_keeps_exit_zero(tmp_path: Path)
     assert "first.png" in result.stdout
     assert f"[失败] {second_file}" in result.stdout
     assert "refine boom" in result.stdout
+
+
+def test_codex_picbatch_plays_system_notification_sound_once_after_completion(tmp_path: Path) -> None:
+    first_file = tmp_path / "first.md"
+    second_file = tmp_path / "second.md"
+    first_file.write_text("生成第一张图", encoding="utf-8")
+    second_file.write_text("生成第二张图", encoding="utf-8")
+
+    def fake_run_codex_picbatch(
+        *,
+        md_paths: list[Path],
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicBatchResult:
+        assert md_paths == [first_file, second_file]
+        assert size is None
+        assert quality is None
+        assert output_format is None
+        return CodexPicBatchResult(
+            results=[
+                CodexPicBatchItemResult(
+                    md_path=first_file,
+                    succeeded=True,
+                    image_output_file=Path("output") / "pic" / "first" / "first.png",
+                    trace_output_file=Path("output") / "pic" / "first" / "first.trace.log",
+                    error_message=None,
+                ),
+                CodexPicBatchItemResult(
+                    md_path=second_file,
+                    succeeded=False,
+                    image_output_file=None,
+                    trace_output_file=Path("output") / "pic" / "second" / "second.trace.log",
+                    error_message="refine boom",
+                ),
+            ]
+        )
+
+    with (
+        patch("beartools.commands.codex.command.run_codex_picbatch", side_effect=fake_run_codex_picbatch),
+        patch("beartools.commands.codex.command.play_system_notification_sound") as mock_play_system_notification_sound,
+    ):
+        result = runner.invoke(app, ["codex", "picbatch", f"{first_file},{second_file}"])
+
+    assert result.exit_code == 0
+    mock_play_system_notification_sound.assert_called_once_with()
 
 
 def test_codex_picbatch_passes_cli_options(tmp_path: Path) -> None:
@@ -338,6 +417,40 @@ def test_codex_picedit_prints_output_dir(tmp_path: Path) -> None:
     assert f"结果目录: {image_file.parent}" in normalized_stdout
     assert f"图片已写入: {image_file.parent / 'avatar_version_001.png'}" in normalized_stdout
     assert f"Trace 已写入: {image_file.parent / 'avatar_version_001.trace.log'}" in normalized_stdout
+
+
+def test_codex_picedit_plays_system_notification_sound_after_success(tmp_path: Path) -> None:
+    image_file = tmp_path / "avatar.png"
+    image_file.write_bytes(b"image")
+
+    def fake_run_codex_picedit(
+        *,
+        image_path: Path,
+        prompt: str,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexPicResult:
+        assert image_path == image_file
+        assert prompt == "提亮并增强科技感"
+        assert size is None
+        assert quality is None
+        assert output_format is None
+        output_dir = image_file.parent
+        return CodexPicResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "avatar_version_001.png",
+            trace_output_file=output_dir / "avatar_version_001.trace.log",
+        )
+
+    with (
+        patch("beartools.commands.codex.command.run_codex_picedit", side_effect=fake_run_codex_picedit),
+        patch("beartools.commands.codex.command.play_system_notification_sound") as mock_play_system_notification_sound,
+    ):
+        result = runner.invoke(app, ["codex", "picedit", str(image_file), "提亮并增强科技感"])
+
+    assert result.exit_code == 0
+    mock_play_system_notification_sound.assert_called_once_with()
 
 
 def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

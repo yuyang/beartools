@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from rich.console import Console
 import typer
@@ -12,6 +13,17 @@ from beartools.codex_pic import run_codex_pic, run_codex_picbatch, run_codex_pic
 
 codex_app = typer.Typer(help="Codex 工具", add_completion=False)
 console = Console()
+
+
+def play_system_notification_sound() -> None:
+    """播放 macOS 系统提醒音。"""
+
+    subprocess.run(
+        ["afplay", "/System/Library/Sounds/Glass.aiff"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def codex_run(
@@ -48,6 +60,7 @@ def codex_pic(
     console.print(f"结果目录: {result.output_dir}", style="green")
     console.print(f"图片已写入: {result.image_output_file}", style="green")
     console.print(f"Trace 已写入: {result.trace_output_file}", style="green")
+    play_system_notification_sound()
 
 
 def codex_picbatch(
@@ -84,6 +97,8 @@ def codex_picbatch(
             if item.trace_output_file is not None:
                 print(f"Trace: {item.trace_output_file}")
 
+    play_system_notification_sound()
+
 
 def codex_picedit(
     image_path: Path = typer.Argument(..., help="本地图片文件路径"),  # noqa: B008
@@ -109,6 +124,7 @@ def codex_picedit(
     console.print(f"结果目录: {result.output_dir}", style="green")
     console.print(f"图片已写入: {result.image_output_file}", style="green")
     console.print(f"Trace 已写入: {result.trace_output_file}", style="green")
+    play_system_notification_sound()
 
 
 codex_app.command("run", help="执行 Codex Markdown 任务")(codex_run)
