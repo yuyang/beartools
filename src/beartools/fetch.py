@@ -214,6 +214,83 @@ class XDotComFetchHandler(BaseFetchHandler):
         )
 
 
+class GenericMarkdownFetchHandler(BaseFetchHandler):
+    """通用 Markdown 抓取处理器。
+
+    处理未知域名，使用 opencli 直接下载为 Markdown 并写入文件。
+    """
+
+    async def fetch(self) -> FetchResult:
+        """执行通用网页抓取并写入 Markdown 文件。
+
+        Returns:
+            FetchResult 抓取结果
+
+        Raises:
+            FileNotFoundError: opencli 命令未安装
+            TimeoutError: 命令执行超时
+            RuntimeError: 下载失败
+        """
+        await self.prepare_directories()
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "opencli",
+                "web",
+                "read",
+                "--url",
+                self.url,
+                "--output",
+                str(self.format_dir),
+                cwd=str(self.download_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(  # type: ignore[misc]
+                    proc.communicate(), timeout=300
+                )
+            except TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                raise TimeoutError("命令执行超时（超过5分钟）") from None
+        except FileNotFoundError:
+            raise FileNotFoundError("未找到 opencli 命令，请确认已安装") from None
+
+        stdout_str = stdout.decode()
+        stderr_str = stderr.decode()
+        output = stdout_str + stderr_str
+
+        if proc.returncode == 0 and stdout_str.strip():
+            markdown_files = sorted(self.format_dir.rglob("*.md"))
+            if not markdown_files:
+                file_path = self.format_dir / f"{self.url_id}.md"
+                content = f"{self.url}\n\n下载失败：未生成 Markdown 文件"
+                async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
+                    await f.write(content)
+                raise RuntimeError(output if output.strip() else content)
+            fetch_failed = False
+        else:
+            error_msg = stderr_str.strip() if stderr_str.strip() else "未知错误"
+            file_path = self.format_dir / f"{self.url_id}.md"
+            content = f"{self.url}\n\n下载失败：{error_msg}"
+            fetch_failed = True
+
+            async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
+                await f.write(content)
+
+        if fetch_failed:
+            raise RuntimeError(output if output.strip() else content)
+
+        return FetchResult(
+            original_url=self.url,
+            target_dir=self.download_dir,
+            markdown_dir=self.format_dir,
+            output=output,
+            embed_results=[],
+        )
+
+
 def fetch_handler_factory(url: str) -> BaseFetchHandler:
     """根据URL域名返回对应的抓取处理器实例
 
@@ -235,7 +312,7 @@ def fetch_handler_factory(url: str) -> BaseFetchHandler:
     elif hostname in ("x.com", "twitter.com") or hostname.endswith((".x.com", ".twitter.com")):
         return XDotComFetchHandler(url)
     else:
-        raise ValueError(f"暂不支持域名: {hostname}")
+        return GenericMarkdownFetchHandler(url)
 
 
 async def fetch_url(url: str) -> FetchResult:
@@ -251,7 +328,6 @@ async def fetch_url(url: str) -> FetchResult:
         FetchResult 包含下载目录、Markdown 输出目录、命令输出和图片内嵌结果
 
     Raises:
-        ValueError: 域名暂不支持
         FileNotFoundError: opencli 命令未安装
         TimeoutError: 命令执行超时
         RuntimeError: 下载失败（output 作为异常消息）

@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+import tempfile
 from unittest.mock import Mock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 from beartools.cli import app
 from beartools.fetch import (
     FetchResult,
+    GenericMarkdownFetchHandler,
     WeixinFetchHandler,
     XDotComFetchHandler,
     fetch_handler_factory,
@@ -100,10 +102,11 @@ class TestFetchUrl:
     """fetch_url 函数测试"""
 
     @pytest.mark.asyncio
-    async def test_unsupported_domain_raises_value_error(self) -> None:
-        """测试不支持的域名抛出 ValueError"""
-        with pytest.raises(ValueError, match="暂不支持域名"):
-            await fetch_url("https://example.com/test")
+    async def test_unknown_domain_without_opencli_raises_file_not_found(self) -> None:
+        """测试未知域名在缺少 opencli 时抛出 FileNotFoundError"""
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError()):
+            with pytest.raises(FileNotFoundError, match="未找到 opencli 命令"):
+                await fetch_url("https://example.com/test")
 
     @pytest.mark.asyncio
     @patch("asyncio.create_subprocess_exec")
@@ -341,10 +344,105 @@ class TestFetchHandlerFactory:
         handler = fetch_handler_factory("twitter.com/user/status/123456")
         assert isinstance(handler, XDotComFetchHandler)
 
-    def test_unsupported_domain_raises_value_error(self) -> None:
-        """测试不支持的域名抛出ValueError"""
-        with pytest.raises(ValueError, match="暂不支持域名"):
-            fetch_handler_factory("https://example.com/test")
+    def test_unknown_domain_returns_generic_markdown_handler(self) -> None:
+        """测试未知域名返回通用 Markdown 处理器"""
+        handler = fetch_handler_factory("https://example.com/test")
+        assert isinstance(handler, GenericMarkdownFetchHandler)
+
+
+class TestGenericMarkdownFetchHandler:
+    """通用 Markdown 抓取处理器测试类"""
+
+    def test_initialization_sets_properties_correctly(self) -> None:
+        """测试初始化正确设置所有属性"""
+        url = "https://example.com/test"
+        handler = GenericMarkdownFetchHandler(url)
+
+        assert handler.url == url
+        assert handler.url_id == url_to_id(url)
+        assert len(handler.url_id) == 16
+        assert "download" in str(handler.download_dir)
+        assert "format" in str(handler.format_dir)
+        assert handler.url_id in str(handler.download_dir)
+        assert handler.url_id in str(handler.format_dir)
+
+    @pytest.mark.asyncio
+    @patch("asyncio.create_subprocess_exec")
+    async def test_fetch_success_writes_markdown_file(self, mock_create_proc: Mock) -> None:
+        """测试成功抓取场景，输出目录中存在 Markdown 文件"""
+        mock_stdout = b"saved: /tmp/example/Example.md\n"
+        mock_proc = create_mock_process(stdout=mock_stdout)
+        mock_create_proc.return_value = mock_proc
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            handler = GenericMarkdownFetchHandler("https://example.com/test")
+            handler.download_dir = Path(temp_dir) / "download"
+            handler.format_dir = Path(temp_dir) / "format"
+            await handler.prepare_directories()
+            md_path = handler.format_dir / "Example" / "Example.md"
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text("# Example\n", encoding="utf-8")
+
+            result = await handler.fetch()
+
+            assert isinstance(result, FetchResult)
+            assert result.original_url == "https://example.com/test"
+            assert result.output == mock_stdout.decode()
+            assert result.embed_results == []
+            assert result.target_dir == handler.download_dir
+            assert result.markdown_dir == handler.format_dir
+
+            mock_create_proc.assert_called_once()
+            call_args = mock_create_proc.call_args
+            assert call_args[0][0] == "opencli"
+            assert call_args[0][1] == "web"
+            assert call_args[0][2] == "read"
+            assert call_args[0][3] == "--url"
+            assert call_args[0][4] == "https://example.com/test"
+            assert call_args[0][5] == "--output"
+            assert call_args[0][6] == str(handler.format_dir)
+            assert call_args[1]["cwd"] == str(handler.download_dir)
+
+    @pytest.mark.asyncio
+    @patch("asyncio.create_subprocess_exec")
+    async def test_fetch_failure_writes_error_file_and_raises_runtime_error(self, mock_create_proc: Mock) -> None:
+        """测试抓取失败场景，写入错误文件后抛出 RuntimeError"""
+        mock_stderr = b"error: article fetch failed\n"
+        mock_proc = create_mock_process(stderr=mock_stderr, returncode=1)
+        mock_create_proc.return_value = mock_proc
+
+        mock_file_context, write_mock = create_mock_file_context()
+        with patch("aiofiles.open", return_value=mock_file_context) as mock_open:
+            handler = GenericMarkdownFetchHandler("https://example.com/test")
+            with pytest.raises(RuntimeError, match="error: article fetch failed"):
+                await handler.fetch()
+
+            mock_open.assert_called_once_with(handler.format_dir / f"{handler.url_id}.md", "w", encoding="utf-8")
+            expected_content = "https://example.com/test\n\n下载失败：error: article fetch failed"
+            write_mock.assert_called_once_with(expected_content)
+
+    @pytest.mark.asyncio
+    @patch("asyncio.wait_for")
+    @patch("asyncio.create_subprocess_exec")
+    async def test_fetch_timeout_kills_process(self, mock_create_proc: Mock, mock_wait_for: Mock) -> None:
+        """测试命令超时会杀死进程并抛出 TimeoutError"""
+        mock_proc = create_mock_process()
+        mock_create_proc.return_value = mock_proc
+        mock_wait_for.side_effect = raise_timeout_and_close
+
+        handler = GenericMarkdownFetchHandler("https://example.com/test")
+        with pytest.raises(TimeoutError, match="命令执行超时"):
+            await handler.fetch()
+
+        mock_proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_opencli_not_found_raises_file_not_found(self) -> None:
+        """测试 opencli 不存在时抛出 FileNotFoundError"""
+        handler = GenericMarkdownFetchHandler("https://example.com/test")
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError()):
+            with pytest.raises(FileNotFoundError, match="未找到 opencli 命令"):
+                await handler.fetch()
 
 
 class TestXDotComFetchHandler:
