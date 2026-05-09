@@ -49,6 +49,7 @@ beartools = "beartools.cli:app"
 | 命令 | 命令模块 | 业务模块 | 说明 |
 | --- | --- | --- | --- |
 | `beartools doctor` | `commands/doctor/command.py` | `commands/doctor/checks/*`、`llm/runtime.py` | 并发执行健康检查，默认检查网络、opencli、思源，可选 LLM |
+| `beartools model check` | `commands/model/command.py` | `model_check.py`、`llm/runtime.py` | 对配置中的所有 LLM 模型执行选择题评测，输出正确率报告 |
 | `beartools clear` | `commands/clear/command.py` | 无独立业务模块 | 清理临时目录内容 |
 | `beartools siyuan` | `commands/siyuan/command.py` | `siyuan.py` | 列笔记本、导出 Markdown、上传 Markdown |
 | `beartools record` | `commands/record/command.py` | `record.py` | 查询 SQLite URL 记录 |
@@ -84,6 +85,11 @@ beartools = "beartools.cli:app"
 - `llm/factory.py`
   - 根据当前健康节点创建 OpenAI SDK 客户端、Pydantic AI provider 和 chat model。
   - 隐藏不同 openai/pydantic-ai 版本对 default headers 支持差异。
+- `model_check.py`
+  - 读取 `check/questions.yaml` 或指定 YAML/JSON 题库。
+  - 遍历 `agent.large` 和 `agent.small` 中的去重模型节点，逐题调用 Chat Completions 兼容接口。
+  - 只接受 `A` 到 `Z` 的单字母选择题答案，模型输出解释、标点或包装文本时判错。
+  - 对外提供题库加载、进度与单题结果事件回调、单节点评测、完整评测和 Markdown 报告渲染。
 - `prompt/template.py`
   - 将 `{{ variable }}` 风格模板转换为 Jinja2 模板。
   - 提取变量、渲染模板、在缺失参数时抛出明确异常。
@@ -219,6 +225,7 @@ beartools doctor [--run-llm]
 | `tests/test_prompt.py` | Prompt 模板变量和渲染 |
 | `tests/test_llm_runtime.py` | LLM 节点池、探测、故障切换 |
 | `tests/test_agent_factory.py` | LLM factory 和 provider/model 创建 |
+| `tests/test_model_check.py` | 模型选择题评测、严格答案解析、报告渲染和 CLI 注册 |
 | `tests/test_bill_service.py` | 账单归一化、分析、流水线 |
 | `tests/test_bill_agent.py` | 账单 LLM agent 结构化输出 |
 | `tests/test_bill_command.py` | 账单 CLI 命令适配层 |
@@ -234,6 +241,8 @@ README 中提到的 CLI 集成测试入口为 `tests/test_cli_integration_comman
 | --- | --- |
 | 私有配置 | `config/beartools.yaml` |
 | 配置样例 | `config/beartools.yaml.sample`、`config/beartools.secrets.yaml.sample` |
+| Model Check 默认题库 | `check/questions.yaml` |
+| Model Check 默认报告 | `output/report.md` |
 | 日志 | `log/` |
 | URL 记录数据库 | `data/record/beartools.db` |
 | 账单输出 | `data/bill/*.normalized.xlsx`、`data/bill/*.analysis.xlsx` |
@@ -253,6 +262,7 @@ README 中提到的 CLI 集成测试入口为 `tests/test_cli_integration_comman
 | 调整 Codex Markdown 执行 | `codex.py`、`commands/codex/command.py` |
 | 调整 Codex 图片生成 | `codex_pic.py`、`prompts/codex_pic_refine.md`、`prompts/codex_picedit_refine.md` |
 | 调整 LLM 节点策略 | `config.py`、`llm/runtime.py`、`llm/factory.py` |
+| 调整模型选择题评测 | `model_check.py`、`commands/model/command.py`、`check/questions.yaml`、`tests/test_model_check.py` |
 | 调整 Prompt 模板系统 | `prompt/template.py`、`prompt/manager.py`、`prompts/` |
 | 新增 doctor 检查项 | `commands/doctor/checks/<name>.py`，用 `register_check` 注册 |
 | 调整日志行为 | `logger.py`、`config/beartools.yaml.sample` |

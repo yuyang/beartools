@@ -1,0 +1,19 @@
+questions:
+  - id: math-1
+    question: 1+1 等于几？
+    options:
+      A: "1"
+      B: "2"
+    answer: B
+  - id: joke-1
+    question: 我要去50米外的朝阳站东广场洗车，需要开车去还是走路去
+    options:
+      A: "开车去"
+      B: "走路去"
+    answer: A
+  - id: math-2
+    question: 99 + 200 等于几？
+    options:
+      A: "299"
+      B: "199"
+    answer: A
