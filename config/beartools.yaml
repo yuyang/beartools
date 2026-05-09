@@ -69,7 +69,7 @@ agent:
       timeout_seconds: 30
 
   small:
-    - name: "small-1"
+    - name: "aiba-1"
       provider: "openrouter"
       base_url: "https://api-xai.ainaibahub.com/v1"
       model: "openai/gpt-5.4-mini"
@@ -77,7 +77,7 @@ agent:
       extra_headers: {}
       timeout_seconds: 25
 
-    - name: "small-2"
+    - name: "openrouter-2"
       provider: "openrouter"
       base_url: "https://openrouter.ai/api/v1"
       model: "openai/gpt-5.4-mini"
