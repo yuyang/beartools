@@ -369,7 +369,7 @@ class TestGenericMarkdownFetchHandler:
     @pytest.mark.asyncio
     @patch("asyncio.create_subprocess_exec")
     async def test_fetch_success_writes_markdown_file(self, mock_create_proc: Mock) -> None:
-        """测试成功抓取场景，输出目录中存在 Markdown 文件"""
+        """测试成功抓取场景，opencli 会在输出目录中生成 Markdown 文件"""
         mock_stdout = b"saved: /tmp/example/Example.md\n"
         mock_proc = create_mock_process(stdout=mock_stdout)
         mock_create_proc.return_value = mock_proc
@@ -401,6 +401,10 @@ class TestGenericMarkdownFetchHandler:
             assert call_args[0][4] == "https://example.com/test"
             assert call_args[0][5] == "--output"
             assert call_args[0][6] == str(handler.format_dir)
+            assert call_args[0][7] == "--wait"
+            assert call_args[0][8] == "5"
+            assert call_args[0][9] == "-f"
+            assert call_args[0][10] == "md"
             assert call_args[1]["cwd"] == str(handler.download_dir)
 
     @pytest.mark.asyncio

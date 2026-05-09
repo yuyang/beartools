@@ -549,8 +549,77 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
     assert '"input_tokens": 7' in trace_text
     assert '"output_tokens": 8' in trace_text
     assert '"total_tokens": 15' in trace_text
+    assert '"image_request_elapsed_seconds":' in trace_text
+    assert '"image_decode_elapsed_seconds":' in trace_text
+    assert '"image_write_elapsed_seconds":' in trace_text
     assert '"total_elapsed_seconds":' in trace_text
     assert '"image_response": "image-edit-response"' in trace_text
+
+
+def test_run_codex_picedit_excludes_b64_payload_from_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image_file = tmp_path / "avatar.png"
+    image_file.write_bytes(b"source-image")
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+        del config
+        assert prompt == "提亮并增强科技感"
+        return "保留人物主体，提亮光线并增加悬浮面板"
+
+    class FakeImages:
+        async def edit(self, **kwargs: object) -> object:
+            del kwargs
+            return type(
+                "FakeImageResponse",
+                (),
+                {
+                    "data": [type("FakeImageData", (), {"b64_json": "aGVsbG8=", "revised_prompt": "增强层次"})()],
+                    "usage": {"input_tokens": 7, "output_tokens": 8, "total_tokens": 15},
+                    "model_dump": lambda _self: {
+                        "data": [{"b64_json": "HUGE_BASE64_EDIT", "revised_prompt": "增强层次"}],
+                        "meta": {"source": "edit"},
+                    },
+                    "__str__": lambda _self: "should-not-appear",
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
+            del api_key, base_url, timeout
+            self.images = FakeImages()
+
+        def with_options(self, *, timeout: float) -> FakeClient:
+            del timeout
+            return self
+
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic._refine_picedit_prompt_async", fake_refine_picedit_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex_pic.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+                pic_size="1024x1024",
+                pic_quality="high",
+                pic_output_format="png",
+                pic_response_format="b64_json",
+            )
+        ),
+    )
+
+    result = run_codex_picedit(image_path=image_file, prompt="提亮并增强科技感")
+
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"image_response": {' in trace_text
+    assert '"meta": {' in trace_text
+    assert '"source": "edit"' in trace_text
+    assert '"revised_prompt": "增强层次"' in trace_text
+    assert "HUGE_BASE64_EDIT" not in trace_text
+    assert '"image_response": "should-not-appear"' not in trace_text
+    assert "should-not-appear" not in trace_text
 
 
 @pytest.mark.parametrize(
@@ -733,9 +802,148 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
     assert '"input_tokens": 12' in trace_text
     assert '"output_tokens": 34' in trace_text
     assert '"total_tokens": 46' in trace_text
+    assert '"image_request_started_at": ' in trace_text
+    assert '"image_request_elapsed_seconds":' in trace_text
+    assert '"image_decode_elapsed_seconds":' in trace_text
+    assert '"image_write_elapsed_seconds":' in trace_text
     assert '"total_elapsed_seconds":' in trace_text
     assert '"image_response": "image-response"' in trace_text
     assert result.output_dir == Path("output") / "pic" / "banner"
+
+
+def test_run_codex_pic_excludes_b64_payload_from_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    md_file = tmp_path / "input" / "codex" / "big-banner.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成大图", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+        del config
+        assert prompt == "生成大图"
+        return "润色后的大图提示词"
+
+    class FakeImages:
+        async def generate(self, **kwargs: object) -> object:
+            del kwargs
+            return type(
+                "FakeImageResponse",
+                (),
+                {
+                    "data": [
+                        type(
+                            "FakeImageData",
+                            (),
+                            {"b64_json": "aGVsbG8=", "revised_prompt": "保留主体，增强光影"},
+                        )()
+                    ],
+                    "created": 1234567890,
+                    "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+                    "model_dump": lambda _self: {
+                        "created": 1234567890,
+                        "data": [{"b64_json": "VERY_LARGE_BASE64", "revised_prompt": "保留主体，增强光影"}],
+                    },
+                    "__str__": lambda _self: "should-not-be-used-when-model-dump-exists",
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
+            del api_key, base_url, timeout
+            self.images = FakeImages()
+
+        def with_options(self, *, timeout: float) -> FakeClient:
+            del timeout
+            return self
+
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex_pic.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+                pic_size="1536x1024",
+                pic_quality="high",
+                pic_output_format="png",
+                pic_response_format="b64_json",
+            )
+        ),
+    )
+
+    result = run_codex_pic(md_path=md_file)
+
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"image_response": {' in trace_text
+    assert '"created": 1234567890' in trace_text
+    assert '"revised_prompt": "保留主体，增强光影"' in trace_text
+    assert "VERY_LARGE_BASE64" not in trace_text
+    assert '"image_response": "should-not-be-used-when-model-dump-exists"' not in trace_text
+    assert "should-not-be-used-when-model-dump-exists" not in trace_text
+
+
+def test_run_codex_pic_logs_before_request_and_writes_request_started_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    md_file = tmp_path / "input" / "codex" / "poster.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成海报", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("INFO")
+
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+        del config
+        assert prompt == "生成海报"
+        return "适合出图的海报提示词"
+
+    class FakeImages:
+        async def generate(self, **kwargs: object) -> object:
+            assert kwargs["prompt"] == "适合出图的海报提示词"
+            return type(
+                "FakeImageResponse",
+                (),
+                {
+                    "data": [type("FakeImageData", (), {"b64_json": "aGVsbG8="})()],
+                    "usage": type(
+                        "FakeUsage",
+                        (),
+                        {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                    )(),
+                    "__str__": lambda _self: "image-response",
+                },
+            )()
+
+    class FakeClient:
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
+            del api_key, base_url, timeout
+            self.images = FakeImages()
+
+        def with_options(self, *, timeout: float) -> FakeClient:
+            del timeout
+            return self
+
+    monkeypatch.setattr("beartools.codex_pic.AsyncOpenAI", FakeClient)
+    monkeypatch.setattr("beartools.codex_pic._refine_pic_prompt_async", fake_refine_pic_prompt_async)
+    monkeypatch.setattr(
+        "beartools.codex_pic.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    run_codex_pic(md_path=md_file)
+
+    assert "即将请求图片生成接口" in caplog.text
+    assert "md_path=" in caplog.text
+    trace_text = (Path("output") / "pic" / "poster" / "poster.trace.log").read_text(encoding="utf-8")
+    assert '"image_request_started_at": ' in trace_text
 
 
 def test_log_pic_stage_records_prompt_and_usage(caplog: pytest.LogCaptureFixture) -> None:

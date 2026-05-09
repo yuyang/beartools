@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from agents import Agent, OpenAIResponsesModel, Runner, set_tracing_disabled
 from openai import AsyncOpenAI
@@ -28,6 +28,13 @@ logger = get_logger(__name__)
 DEFAULT_PIC_REFINE_TIMEOUT_SECONDS = 300
 DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS = 600
 _PICEDIT_VERSION_SUFFIX_RE = re.compile(r"^(?P<base>.+?)_version_(?P<version>\d+)$")
+
+
+class _ModelDumpProtocol(Protocol):
+    """支持导出为字典的 SDK 响应对象。"""
+
+    def model_dump(self) -> object:
+        """返回可序列化对象。"""
 
 
 @dataclass
@@ -121,6 +128,60 @@ def _extract_image_b64_json(response: object) -> str:
     if not isinstance(b64_json, str) or not b64_json.strip():
         raise RuntimeError("图片生成响应缺少 b64_json")
     return b64_json
+
+
+def _sanitize_trace_value(value: object) -> object:
+    """清理 trace 中不适合落盘的大字段，避免写入 base64 图片内容。"""
+
+    if isinstance(value, Mapping):
+        return _sanitize_trace_mapping(cast(Mapping[object, object], value))
+    if isinstance(value, list):
+        return [_sanitize_trace_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_trace_value(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    model_dump_value = _sanitize_model_dump_value(value)
+    if model_dump_value is not None:
+        return model_dump_value
+    dict_value = _sanitize_object_dict_value(value)
+    if dict_value is not None:
+        return dict_value
+    return str(value)
+
+
+def _sanitize_trace_mapping(value: Mapping[object, object]) -> dict[str, object]:
+    """清理字典形式的 trace 值。"""
+
+    sanitized: dict[str, object] = {}
+    for key, item in value.items():
+        if key == "b64_json":
+            continue
+        if isinstance(key, str):
+            sanitized[key] = _sanitize_trace_value(item)
+    return sanitized
+
+
+def _sanitize_model_dump_value(value: object) -> object | None:
+    """优先使用 SDK 对象的 model_dump 结果。"""
+
+    model_dump = _safe_getattr(value, "model_dump")
+    if not callable(model_dump):
+        return None
+    dumped = cast(_ModelDumpProtocol, value).model_dump()
+    return _sanitize_trace_value(dumped)
+
+
+def _sanitize_object_dict_value(value: object) -> object | None:
+    """退回清理普通对象的 __dict__。"""
+
+    raw_dict = _safe_getattr(value, "__dict__")
+    if not isinstance(raw_dict, Mapping):
+        return None
+    sanitized_dict = _sanitize_trace_mapping(cast(Mapping[object, object], raw_dict))
+    if not sanitized_dict:
+        return None
+    return sanitized_dict
 
 
 def _normalize_pic_size(
@@ -404,6 +465,17 @@ async def run_codex_pic_async(
 
     client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, timeout=float(image_timeout_seconds))
     image_started_at = time.monotonic()
+    trace_payload["image_request_started_at"] = round(time.time(), 3)
+    logger.info(
+        "即将请求图片生成接口: md_path=%s pic_model=%s size=%s quality=%s response_format=%s output_format=%s",
+        md_path,
+        config.pic_model,
+        pic_size,
+        pic_quality,
+        pic_response_format,
+        pic_output_format,
+    )
+    _write_pic_trace(trace_output_file, trace_payload)
     try:
         response: ImagesResponse = await client.with_options(timeout=float(image_timeout_seconds)).images.generate(
             model=config.pic_model,
@@ -421,14 +493,26 @@ async def run_codex_pic_async(
         logger.exception("生成图片失败: md_path=%s", md_path)
         raise
 
+    request_finished_at = time.monotonic()
+    trace_payload["image_request_elapsed_seconds"] = round(request_finished_at - image_started_at, 3)
     image_token_usage = _extract_usage_tokens(response)
+    logger.info(
+        "图片生成响应已返回: md_path=%s request_elapsed_seconds=%s has_usage=%s",
+        md_path,
+        trace_payload["image_request_elapsed_seconds"],
+        _safe_getattr(response, "usage") is not None,
+    )
+    decode_started_at = time.monotonic()
     image_bytes = base64.b64decode(_extract_image_b64_json(response))
+    trace_payload["image_decode_elapsed_seconds"] = round(time.monotonic() - decode_started_at, 3)
+    write_started_at = time.monotonic()
     image_output_file.write_bytes(image_bytes)
+    trace_payload["image_write_elapsed_seconds"] = round(time.monotonic() - write_started_at, 3)
     trace_payload["status"] = "completed"
     trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
     trace_payload["total_elapsed_seconds"] = round(time.monotonic() - total_started_at, 3)
     trace_payload["image_token_usage"] = _token_usage_to_payload(image_token_usage)
-    trace_payload["image_response"] = str(response)
+    trace_payload["image_response"] = _sanitize_trace_value(response)
     trace_payload["image_output_file"] = str(image_output_file)
     _write_pic_trace(trace_output_file, trace_payload)
     _log_pic_stage(
@@ -549,6 +633,17 @@ async def run_codex_picedit_async(
 
     client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, timeout=float(image_timeout_seconds))
     image_started_at = time.monotonic()
+    trace_payload["image_request_started_at"] = round(time.time(), 3)
+    logger.info(
+        "即将请求图片编辑接口: image_path=%s pic_model=%s size=%s quality=%s response_format=%s output_format=%s",
+        image_path,
+        config.pic_model,
+        pic_size,
+        pic_quality,
+        pic_response_format,
+        pic_output_format,
+    )
+    _write_pic_trace(trace_output_file, trace_payload)
     try:
         with image_path.open("rb") as image_handle:
             response: ImagesResponse = await client.with_options(timeout=float(image_timeout_seconds)).images.edit(
@@ -568,14 +663,26 @@ async def run_codex_picedit_async(
         logger.exception("修改图片失败: image_path=%s", image_path)
         raise
 
+    request_finished_at = time.monotonic()
+    trace_payload["image_request_elapsed_seconds"] = round(request_finished_at - image_started_at, 3)
     image_token_usage = _extract_usage_tokens(response)
+    logger.info(
+        "图片编辑响应已返回: image_path=%s request_elapsed_seconds=%s has_usage=%s",
+        image_path,
+        trace_payload["image_request_elapsed_seconds"],
+        _safe_getattr(response, "usage") is not None,
+    )
+    decode_started_at = time.monotonic()
     image_bytes = base64.b64decode(_extract_image_b64_json(response))
+    trace_payload["image_decode_elapsed_seconds"] = round(time.monotonic() - decode_started_at, 3)
+    write_started_at = time.monotonic()
     image_output_file.write_bytes(image_bytes)
+    trace_payload["image_write_elapsed_seconds"] = round(time.monotonic() - write_started_at, 3)
     trace_payload["status"] = "completed"
     trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
     trace_payload["total_elapsed_seconds"] = round(time.monotonic() - total_started_at, 3)
     trace_payload["image_token_usage"] = _token_usage_to_payload(image_token_usage)
-    trace_payload["image_response"] = str(response)
+    trace_payload["image_response"] = _sanitize_trace_value(response)
     trace_payload["image_output_file"] = str(image_output_file)
     _write_pic_trace(trace_output_file, trace_payload)
     _log_pic_stage(

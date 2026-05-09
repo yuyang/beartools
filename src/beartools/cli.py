@@ -16,6 +16,7 @@ from beartools.commands.doctor.command import doctor_command
 from beartools.commands.fetch.command import fetch
 from beartools.commands.gmail import gmail_app
 from beartools.commands.markdown import markdown_app
+from beartools.commands.newsnow import newsnow_app
 from beartools.commands.record import record_app
 from beartools.commands.siyuan import siyuan_app
 from beartools.logger import shutdown_logging
@@ -71,6 +72,9 @@ app.command(name="fetch", help="根据 URL 抓取内容")(fetch)
 
 # 注册gmail作为子命令
 app.add_typer(gmail_app, name="gmail", help="Gmail 邮件处理")
+
+# 注册newsnow作为子命令
+app.add_typer(newsnow_app, name="newsnow", help="NewsNow 热点抓取")
 
 # 注册codex作为子命令
 app.add_typer(codex_app, name="codex", help="Codex 工具")
