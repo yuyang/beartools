@@ -90,13 +90,19 @@ def _require_codex_pic_config(config: CodexConfig) -> None:
         raise RuntimeError("codex.pic_model 必填且必须是非空字符串")
 
 
-def _resolve_pic_output_paths(md_path: Path, output_format: str) -> tuple[Path, Path, Path]:
+def _resolve_pic_output_paths(
+    md_path: Path,
+    output_format: str,
+    output_dir: Path | None = None,
+    output_stem: str | None = None,
+) -> tuple[Path, Path, Path]:
     """解析 pic 子命令的固定输出路径。"""
 
-    output_dir = Path("output") / "pic" / md_path.stem
-    final_output_file = output_dir / f"{md_path.stem}.{output_format}"
-    trace_output_file = output_dir / f"{md_path.stem}.trace.log"
-    return output_dir, final_output_file, trace_output_file
+    resolved_output_dir = output_dir or Path("output") / "pic" / md_path.stem
+    resolved_stem = output_stem or md_path.stem
+    final_output_file = resolved_output_dir / f"{resolved_stem}.{output_format}"
+    trace_output_file = resolved_output_dir / f"{resolved_stem}.trace.log"
+    return resolved_output_dir, final_output_file, trace_output_file
 
 
 def _resolve_picedit_output_paths(image_path: Path, output_format: str) -> tuple[Path, Path, Path]:
@@ -386,6 +392,8 @@ async def run_codex_pic_async(
     size: str | None = None,
     quality: str | None = None,
     output_format: str | None = None,
+    output_dir: Path | None = None,
+    output_stem: str | None = None,
 ) -> CodexPicResult:
     """执行图片生成任务，并写入 output/pic/<文件名> 目录。"""
 
@@ -404,7 +412,9 @@ async def run_codex_pic_async(
     pic_quality = _normalize_pic_quality(quality or config.pic_quality)
     pic_output_format = _normalize_pic_output_format(output_format or config.pic_output_format)
     pic_response_format = _normalize_pic_response_format(config.pic_response_format)
-    output_dir, image_output_file, trace_output_file = _resolve_pic_output_paths(md_path, pic_output_format)
+    output_dir, image_output_file, trace_output_file = _resolve_pic_output_paths(
+        md_path, pic_output_format, output_dir, output_stem
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     trace_payload: dict[str, object] = {
         "status": "started",
@@ -533,10 +543,21 @@ def run_codex_pic(
     size: str | None = None,
     quality: str | None = None,
     output_format: str | None = None,
+    output_dir: Path | None = None,
+    output_stem: str | None = None,
 ) -> CodexPicResult:
     """同步执行图片生成任务。"""
 
-    return asyncio.run(run_codex_pic_async(md_path=md_path, size=size, quality=quality, output_format=output_format))
+    return asyncio.run(
+        run_codex_pic_async(
+            md_path=md_path,
+            size=size,
+            quality=quality,
+            output_format=output_format,
+            output_dir=output_dir,
+            output_stem=output_stem,
+        )
+    )
 
 
 async def run_codex_picedit_async(

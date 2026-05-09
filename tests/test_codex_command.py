@@ -453,6 +453,674 @@ def test_codex_picedit_plays_system_notification_sound_after_success(tmp_path: P
     mock_play_system_notification_sound.assert_called_once_with()
 
 
+def test_codex_novel_passes_default_options_and_prints_summary(tmp_path: Path) -> None:
+    novel_file = tmp_path / "input" / "novel1.md"
+    novel_file.parent.mkdir(parents=True)
+    novel_file.write_text("小说内容", encoding="utf-8")
+
+    from beartools.codex_novel import CodexNovelResult, CodexNovelSceneResult
+
+    def fake_run_codex_novel(
+        *,
+        input_path: Path,
+        n: int = 4,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexNovelResult:
+        assert input_path == novel_file
+        assert n == 4
+        assert size is None
+        assert quality is None
+        assert output_format is None
+        output_dir = Path("output") / "novel" / "stem_novel1"
+        return CodexNovelResult(
+            output_dir=output_dir,
+            summary_file=output_dir / "summary.md",
+            trace_output_file=output_dir / "novel.trace.log",
+            requested_count=4,
+            selected_count=4,
+            results=[
+                CodexNovelSceneResult(
+                    scene_index=index,
+                    title=f"场景{index}",
+                    scene_prompt_file=output_dir / f"scene_{index:03d}.md",
+                    image_output_file=output_dir / f"scene_{index:03d}.png",
+                    trace_output_file=output_dir / f"scene_{index:03d}.trace.log",
+                    succeeded=True,
+                    error_message=None,
+                )
+                for index in range(1, 5)
+            ],
+        )
+
+    with (
+        patch("beartools.commands.codex.command.run_codex_novel", side_effect=fake_run_codex_novel),
+        patch("beartools.commands.codex.command.play_system_notification_sound") as mock_play_system_notification_sound,
+    ):
+        result = runner.invoke(app, ["codex", "novel", str(novel_file)])
+
+    assert result.exit_code == 0
+    assert "结果目录: output/novel/stem_novel1" in result.stdout
+    assert "Summary 已写入: output/novel/stem_novel1/summary.md" in result.stdout
+    assert "成功: 4" in result.stdout
+    assert "失败: 0" in result.stdout
+    assert "scene_001.png" in result.stdout
+    mock_play_system_notification_sound.assert_called_once_with()
+
+
+def test_codex_novel_passes_cli_options(tmp_path: Path) -> None:
+    novel_file = tmp_path / "input" / "novel2.txt"
+    novel_file.parent.mkdir(parents=True)
+    novel_file.write_text("小说内容", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    from beartools.codex_novel import CodexNovelResult
+
+    def fake_run_codex_novel(
+        *,
+        input_path: Path,
+        n: int = 4,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexNovelResult:
+        captured["input_path"] = input_path
+        captured["n"] = n
+        captured["size"] = size
+        captured["quality"] = quality
+        captured["output_format"] = output_format
+        output_dir = Path("output") / "novel" / "stem_novel2"
+        return CodexNovelResult(
+            output_dir=output_dir,
+            summary_file=output_dir / "summary.md",
+            trace_output_file=output_dir / "novel.trace.log",
+            requested_count=n,
+            selected_count=n,
+            results=[],
+        )
+
+    with patch("beartools.commands.codex.command.run_codex_novel", side_effect=fake_run_codex_novel):
+        result = runner.invoke(
+            app,
+            [
+                "codex",
+                "novel",
+                str(novel_file),
+                "--n",
+                "2",
+                "--size",
+                "1536x1024",
+                "--quality",
+                "medium",
+                "--output-format",
+                "webp",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "input_path": novel_file,
+        "n": 2,
+        "size": "1536x1024",
+        "quality": "medium",
+        "output_format": "webp",
+    }
+
+
+def test_codex_novel_exits_one_when_partial_failure(tmp_path: Path) -> None:
+    novel_file = tmp_path / "input" / "novel1.md"
+    novel_file.parent.mkdir(parents=True)
+    novel_file.write_text("小说内容", encoding="utf-8")
+
+    from beartools.codex_novel import CodexNovelResult, CodexNovelSceneResult
+
+    def fake_run_codex_novel(
+        *,
+        input_path: Path,
+        n: int = 4,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexNovelResult:
+        del input_path, n, size, quality, output_format
+        output_dir = Path("output") / "novel" / "stem_novel1"
+        return CodexNovelResult(
+            output_dir=output_dir,
+            summary_file=output_dir / "summary.md",
+            trace_output_file=output_dir / "novel.trace.log",
+            requested_count=2,
+            selected_count=2,
+            results=[
+                CodexNovelSceneResult(
+                    scene_index=1,
+                    title="场景一",
+                    scene_prompt_file=output_dir / "scene_001.md",
+                    image_output_file=output_dir / "scene_001.png",
+                    trace_output_file=output_dir / "scene_001.trace.log",
+                    succeeded=True,
+                    error_message=None,
+                ),
+                CodexNovelSceneResult(
+                    scene_index=2,
+                    title="场景二",
+                    scene_prompt_file=output_dir / "scene_002.md",
+                    image_output_file=None,
+                    trace_output_file=output_dir / "scene_002.trace.log",
+                    succeeded=False,
+                    error_message="image boom",
+                ),
+            ],
+        )
+
+    with patch("beartools.commands.codex.command.run_codex_novel", side_effect=fake_run_codex_novel):
+        result = runner.invoke(app, ["codex", "novel", str(novel_file), "--n", "2"])
+
+    assert result.exit_code == 1
+    assert "成功: 1" in result.stdout
+    assert "失败: 1" in result.stdout
+    assert "image boom" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("file_name", "args", "message"),
+    [
+        ("story.epub", [], "txt 或 md"),
+        ("story.md", ["--n", "0"], "n"),
+        ("story.md", ["--n", "13"], "n"),
+    ],
+)
+def test_codex_novel_rejects_invalid_input_and_n(tmp_path: Path, file_name: str, args: list[str], message: str) -> None:
+    novel_file = tmp_path / file_name
+    novel_file.write_text("小说内容", encoding="utf-8")
+
+    result = runner.invoke(app, ["codex", "novel", str(novel_file), *args])
+
+    assert result.exit_code == 1
+    assert "错误:" in result.stdout
+    assert message in result.stdout
+
+
+def test_run_codex_novel_writes_prompts_summary_and_uses_novel_output_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from beartools.codex_novel import run_codex_novel
+
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("INFO")
+    input_file = tmp_path / "input" / "long.md"
+    input_file.parent.mkdir(parents=True)
+    input_file.write_text("甲" * 10005, encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def fake_select_novel_scenes_async(
+        *, text: str, n: int, source_name: str, config: CodexConfig
+    ) -> list[dict[str, str]]:
+        captured["text"] = text
+        captured["n"] = n
+        captured["source_name"] = source_name
+        captured["model"] = config.model
+        return [
+            {
+                "title": "场景一",
+                "source_summary": "摘要一",
+                "visual_moment": "瞬间一",
+                "characters": "人物一",
+                "environment": "环境一",
+                "composition": "构图一",
+                "mood": "氛围一",
+                "pic_prompt": "只写图片提示词一",
+            },
+            {
+                "title": "场景二",
+                "source_summary": "摘要二",
+                "visual_moment": "瞬间二",
+                "characters": "人物二",
+                "environment": "环境二",
+                "composition": "构图二",
+                "mood": "氛围二",
+                "pic_prompt": "只写图片提示词二",
+            },
+        ]
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+        output_dir: Path | None = None,
+        output_stem: str | None = None,
+    ) -> CodexPicResult:
+        assert size == "1536x1024"
+        assert quality == "medium"
+        assert output_format == "webp"
+        assert output_dir == Path("output") / "novel" / "stem_long"
+        assert output_stem in {"scene_001", "scene_002"}
+        assert md_path.parent == output_dir
+        assert md_path.read_text(encoding="utf-8") in {"只写图片提示词一", "只写图片提示词二"}
+        image_file = output_dir / f"{output_stem}.webp"
+        trace_file = output_dir / f"{output_stem}.trace.log"
+        image_file.write_bytes(b"image")
+        trace_file.write_text("trace", encoding="utf-8")
+        return CodexPicResult(output_dir=output_dir, image_output_file=image_file, trace_output_file=trace_file)
+
+    monkeypatch.setattr("beartools.codex_novel._select_novel_scenes_async", fake_select_novel_scenes_async)
+    monkeypatch.setattr("beartools.codex_novel.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_novel.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    result = run_codex_novel(
+        input_path=input_file,
+        n=2,
+        size="1536x1024",
+        quality="medium",
+        output_format="webp",
+    )
+
+    assert captured["text"] == "甲" * 10000
+    assert captured["n"] == 2
+    assert captured["source_name"] == "long.md"
+    assert captured["model"] == "grok-3-mini"
+    captured_output = capsys.readouterr().out
+    assert "scene_001 pic_prompt: 只写图片提示词一" in captured_output
+    assert "scene_002 pic_prompt: 只写图片提示词二" in captured_output
+    assert "scene_001 pic_prompt=只写图片提示词一" in caplog.text
+    assert "scene_002 pic_prompt=只写图片提示词二" in caplog.text
+    assert result.output_dir == Path("output") / "novel" / "stem_long"
+    assert result.requested_count == 2
+    assert result.selected_count == 2
+    assert [item.succeeded for item in result.results] == [True, True]
+    assert (result.output_dir / "scene_001.md").read_text(encoding="utf-8") == "只写图片提示词一"
+    assert "source_summary" not in (result.output_dir / "scene_001.md").read_text(encoding="utf-8")
+    summary_text = (result.output_dir / "summary.md").read_text(encoding="utf-8")
+    assert "![scene_001](scene_001.webp)" in summary_text
+    assert "scene_001.md" in summary_text
+    assert "scene_001.trace.log" in summary_text
+    assert "只写图片提示词一" in summary_text
+
+
+def test_run_codex_novel_limits_image_generation_concurrency_to_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from beartools.codex_novel import run_codex_novel
+
+    monkeypatch.chdir(tmp_path)
+    input_file = tmp_path / "input" / "novel.md"
+    input_file.parent.mkdir(parents=True)
+    input_file.write_text("小说内容", encoding="utf-8")
+    active_count = 0
+    max_active_count = 0
+    counter_lock = asyncio.Lock()
+
+    async def fake_select_novel_scenes_async(
+        *, text: str, n: int, source_name: str, config: CodexConfig
+    ) -> list[dict[str, str]]:
+        del text, source_name, config
+        return [
+            {
+                "title": f"场景{index}",
+                "source_summary": "摘要",
+                "visual_moment": "瞬间",
+                "characters": "人物",
+                "environment": "环境",
+                "composition": "构图",
+                "mood": "氛围",
+                "pic_prompt": f"图片提示词{index}",
+            }
+            for index in range(1, n + 1)
+        ]
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+        output_dir: Path | None = None,
+        output_stem: str | None = None,
+    ) -> CodexPicResult:
+        del md_path, size, quality, output_format
+        assert output_dir is not None
+        assert output_stem is not None
+        nonlocal active_count, max_active_count
+        async with counter_lock:
+            active_count += 1
+            if active_count > max_active_count:
+                max_active_count = active_count
+        await asyncio.sleep(0.05)
+        async with counter_lock:
+            active_count -= 1
+        image_file = output_dir / f"{output_stem}.png"
+        trace_file = output_dir / f"{output_stem}.trace.log"
+        image_file.write_bytes(b"image")
+        trace_file.write_text("trace", encoding="utf-8")
+        return CodexPicResult(output_dir=output_dir, image_output_file=image_file, trace_output_file=trace_file)
+
+    monkeypatch.setattr("beartools.codex_novel._select_novel_scenes_async", fake_select_novel_scenes_async)
+    monkeypatch.setattr("beartools.codex_novel.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_novel.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    result = run_codex_novel(input_path=input_file, n=4)
+
+    assert len(result.results) == 4
+    assert max_active_count == 2
+
+
+def test_run_codex_novel_retries_scene_selection_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from beartools.codex_novel import run_codex_novel
+
+    monkeypatch.chdir(tmp_path)
+    input_file = tmp_path / "input" / "novel.md"
+    input_file.parent.mkdir(parents=True)
+    input_file.write_text("小说内容", encoding="utf-8")
+    call_count = 0
+
+    async def fake_select_novel_scenes_async(
+        *, text: str, n: int, source_name: str, config: CodexConfig
+    ) -> list[dict[str, str]]:
+        del text, n, source_name, config
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ValueError("JSON 解析失败")
+        return [
+            {
+                "title": "场景一",
+                "source_summary": "摘要一",
+                "visual_moment": "瞬间一",
+                "characters": "人物一",
+                "environment": "环境一",
+                "composition": "构图一",
+                "mood": "氛围一",
+                "pic_prompt": "只写图片提示词一",
+            }
+        ]
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+        output_dir: Path | None = None,
+        output_stem: str | None = None,
+    ) -> CodexPicResult:
+        del md_path, size, quality, output_format
+        assert output_dir is not None
+        assert output_stem is not None
+        image_file = output_dir / f"{output_stem}.png"
+        trace_file = output_dir / f"{output_stem}.trace.log"
+        image_file.write_bytes(b"image")
+        trace_file.write_text("trace", encoding="utf-8")
+        return CodexPicResult(output_dir=output_dir, image_output_file=image_file, trace_output_file=trace_file)
+
+    monkeypatch.setattr("beartools.codex_novel._select_novel_scenes_async", fake_select_novel_scenes_async)
+    monkeypatch.setattr("beartools.codex_novel.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_novel.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    result = run_codex_novel(input_path=input_file, n=1)
+
+    assert call_count == 2
+    assert result.results[0].succeeded is True
+    assert "JSON 解析失败" in result.trace_output_file.read_text(encoding="utf-8")
+
+
+def test_run_codex_novel_allows_fewer_scenes_and_exits_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from beartools.codex_novel import run_codex_novel
+
+    monkeypatch.chdir(tmp_path)
+    input_file = tmp_path / "input" / "short.md"
+    input_file.parent.mkdir(parents=True)
+    input_file.write_text("小说内容", encoding="utf-8")
+
+    async def fake_select_novel_scenes_async(
+        *, text: str, n: int, source_name: str, config: CodexConfig
+    ) -> list[dict[str, str]]:
+        del text, n, source_name, config
+        return [
+            {
+                "title": "唯一场景",
+                "source_summary": "摘要",
+                "visual_moment": "瞬间",
+                "characters": "人物",
+                "environment": "环境",
+                "composition": "构图",
+                "mood": "氛围",
+                "pic_prompt": "唯一图片提示词",
+            }
+        ]
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+        output_dir: Path | None = None,
+        output_stem: str | None = None,
+    ) -> CodexPicResult:
+        del md_path, size, quality, output_format
+        assert output_dir is not None
+        assert output_stem == "scene_001"
+        image_file = output_dir / "scene_001.png"
+        trace_file = output_dir / "scene_001.trace.log"
+        image_file.write_bytes(b"image")
+        trace_file.write_text("trace", encoding="utf-8")
+        return CodexPicResult(output_dir=output_dir, image_output_file=image_file, trace_output_file=trace_file)
+
+    monkeypatch.setattr("beartools.codex_novel._select_novel_scenes_async", fake_select_novel_scenes_async)
+    monkeypatch.setattr("beartools.codex_novel.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_novel.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    result = run_codex_novel(input_path=input_file, n=2)
+
+    assert result.requested_count == 2
+    assert result.selected_count == 1
+    assert result.has_failures is True
+    assert len(result.results) == 1
+    assert "只抽取到 1/2 个场景" in result.summary_file.read_text(encoding="utf-8")
+
+
+def test_run_codex_novel_truncates_extra_scenes_to_requested_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from beartools.codex_novel import run_codex_novel
+
+    monkeypatch.chdir(tmp_path)
+    input_file = tmp_path / "input" / "novel.md"
+    input_file.parent.mkdir(parents=True)
+    input_file.write_text("小说内容", encoding="utf-8")
+    generated_stems: list[str] = []
+
+    async def fake_select_novel_scenes_async(
+        *, text: str, n: int, source_name: str, config: CodexConfig
+    ) -> list[dict[str, str]]:
+        del text, n, source_name, config
+        return [
+            {
+                "title": f"场景{index}",
+                "source_summary": "摘要",
+                "visual_moment": "瞬间",
+                "characters": "人物",
+                "environment": "环境",
+                "composition": "构图",
+                "mood": "氛围",
+                "pic_prompt": f"图片提示词{index}",
+            }
+            for index in range(1, 5)
+        ]
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+        output_dir: Path | None = None,
+        output_stem: str | None = None,
+    ) -> CodexPicResult:
+        del md_path, size, quality, output_format
+        assert output_dir is not None
+        assert output_stem is not None
+        generated_stems.append(output_stem)
+        image_file = output_dir / f"{output_stem}.png"
+        trace_file = output_dir / f"{output_stem}.trace.log"
+        image_file.write_bytes(b"image")
+        trace_file.write_text("trace", encoding="utf-8")
+        return CodexPicResult(output_dir=output_dir, image_output_file=image_file, trace_output_file=trace_file)
+
+    monkeypatch.setattr("beartools.codex_novel._select_novel_scenes_async", fake_select_novel_scenes_async)
+    monkeypatch.setattr("beartools.codex_novel.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_novel.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    result = run_codex_novel(input_path=input_file, n=2)
+
+    assert result.requested_count == 2
+    assert result.selected_count == 2
+    assert result.failure_count == 0
+    assert generated_stems == ["scene_001", "scene_002"]
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"raw_selected_count": 4' in trace_text
+    assert '"selected_count": 2' in trace_text
+
+
+def test_run_codex_novel_generates_best_effort_after_image_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from beartools.codex_novel import run_codex_novel
+
+    monkeypatch.chdir(tmp_path)
+    input_file = tmp_path / "input" / "novel.md"
+    input_file.parent.mkdir(parents=True)
+    input_file.write_text("小说内容", encoding="utf-8")
+
+    async def fake_select_novel_scenes_async(
+        *, text: str, n: int, source_name: str, config: CodexConfig
+    ) -> list[dict[str, str]]:
+        del text, n, source_name, config
+        return [
+            {
+                "title": "失败场景",
+                "source_summary": "摘要一",
+                "visual_moment": "瞬间一",
+                "characters": "人物一",
+                "environment": "环境一",
+                "composition": "构图一",
+                "mood": "氛围一",
+                "pic_prompt": "失败图片提示词",
+            },
+            {
+                "title": "成功场景",
+                "source_summary": "摘要二",
+                "visual_moment": "瞬间二",
+                "characters": "人物二",
+                "environment": "环境二",
+                "composition": "构图二",
+                "mood": "氛围二",
+                "pic_prompt": "成功图片提示词",
+            },
+        ]
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+        output_dir: Path | None = None,
+        output_stem: str | None = None,
+    ) -> CodexPicResult:
+        del md_path, size, quality, output_format
+        assert output_dir is not None
+        assert output_stem is not None
+        trace_file = output_dir / f"{output_stem}.trace.log"
+        if output_stem == "scene_001":
+            trace_file.write_text("failed trace", encoding="utf-8")
+            raise RuntimeError("image boom")
+        image_file = output_dir / f"{output_stem}.png"
+        image_file.write_bytes(b"image")
+        trace_file.write_text("trace", encoding="utf-8")
+        return CodexPicResult(output_dir=output_dir, image_output_file=image_file, trace_output_file=trace_file)
+
+    monkeypatch.setattr("beartools.codex_novel._select_novel_scenes_async", fake_select_novel_scenes_async)
+    monkeypatch.setattr("beartools.codex_novel.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_novel.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    result = run_codex_novel(input_path=input_file, n=2)
+
+    assert [item.succeeded for item in result.results] == [False, True]
+    assert result.has_failures is True
+    assert result.results[0].error_message == "image boom"
+    assert result.results[1].image_output_file == Path("output") / "novel" / "stem_novel" / "scene_002.png"
+    summary_text = result.summary_file.read_text(encoding="utf-8")
+    assert "image boom" in summary_text
+    assert "![scene_001]" not in summary_text
+    assert "![scene_002](scene_002.png)" in summary_text
+
+
 def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     image_file = tmp_path / "avatar.png"
     image_file.write_bytes(b"source-image")
