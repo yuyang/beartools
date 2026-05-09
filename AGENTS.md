@@ -18,6 +18,11 @@
 ## 参考文档
 - 思源笔记API文档：https://github.com/siyuan-note/siyuan/blob/master/API_zh_CN.md
 
+## 代码地图
+- 开始较大功能、跨模块修改、影响范围评估或不熟悉现有结构时，先阅读 `docs/codemap.md`
+- 需要了解历史计划、已落地的跨功能设计决策和实现边界时，检索 `docs/plans/`
+- `AGENTS.md` 只维护操作规则和项目约束；模块职责、调用链、测试地图等导航信息维护在 `docs/codemap.md`
+
 ## 二、常用命令指南
 ### 环境操作
 ```bash
@@ -179,3 +184,16 @@ uv run mypy .
 3. 禁止提交虚拟环境、缓存文件、敏感信息到Git
 4. 禁止在没有明确需求的情况下进行大范围重构
 5. 禁止盲目实现用户需求，发现设计缺陷时主动提出优化建议
+
+## 八、Codex 工作流入口
+当用户说"按 TDD flow 做"、"按商业开发流程做"、"可以用 subagent"等类似表述时，优先读取并执行：
+- `docs/workflows/codex-tdd-flow.md`
+- `docs/checklists/review.md`
+- `docs/checklists/audit.md`
+
+Codex 执行规则：
+- Planner 阶段除按需搜索 `docs/codemap.md` 外，还应检索 `docs/plans/`，查找与当前需求相关的既有设计、实现边界、风险和验证经验。
+- 未得到用户明确授权时，不主动使用 subagent。
+- 用户明确说"可以用 subagent"时，可以把影响范围探索、测试草拟、diff review 等互不冲突的任务分派给 subagent。
+- 主线程必须负责最终集成、文件修改审查、测试验证和结果汇总。
+- planner、reviewer、auditor 阶段默认不修改文件；只有 executor 或明确承担实现任务的 worker 可以修改文件。
