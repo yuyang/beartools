@@ -87,6 +87,7 @@ beartools = "beartools.cli:app"
   - 隐藏不同 openai/pydantic-ai 版本对 default headers 支持差异。
 - `model_check.py`
   - 读取 `check/questions.yaml` 或指定 YAML/JSON 题库。
+  - 支持用 `--id` 只测试指定题目 ID，用 `--model-name` / `-m` 只测试匹配的节点 name 或 model。
   - 遍历 `agent.large` 和 `agent.small` 中的去重模型节点，逐题调用 Chat Completions 兼容接口。
   - 只接受 `A` 到 `Z` 的单字母选择题答案，模型输出解释、标点或包装文本时判错。
   - 对外提供题库加载、进度与单题结果事件回调、单节点评测、完整评测和 Markdown 报告渲染。
@@ -242,7 +243,7 @@ README 中提到的 CLI 集成测试入口为 `tests/test_cli_integration_comman
 | 私有配置 | `config/beartools.yaml` |
 | 配置样例 | `config/beartools.yaml.sample`、`config/beartools.secrets.yaml.sample` |
 | Model Check 默认题库 | `check/questions.yaml` |
-| Model Check 默认报告 | `output/report.md` |
+| Model Check 默认报告 | `output/report-YYYYMMDD-HHMMSS.md` |
 | 日志 | `log/` |
 | URL 记录数据库 | `data/record/beartools.db` |
 | 账单输出 | `data/bill/*.normalized.xlsx`、`data/bill/*.analysis.xlsx` |

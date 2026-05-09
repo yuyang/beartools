@@ -6,18 +6,22 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from beartools.cli import app
-from beartools.commands.model.command import _print_answer, _print_progress
+from beartools.commands.model.command import _print_answer, _print_progress, resolve_default_report_path
 from beartools.llm.runtime import RuntimeNode
 from beartools.model_check import (
     ALLOWED_MODEL_CHECK_CHOICES,
-    DEFAULT_MODEL_CHECK_OUTPUT_PATH,
+    DEFAULT_MODEL_CHECK_OUTPUT_DIR,
     DEFAULT_MODEL_CHECK_QUESTIONS_PATH,
+    DEFAULT_MODEL_CHECK_REPORT_STEM,
     ModelCheckProgressEvent,
     ModelCheckQuestion,
+    filter_model_check_nodes,
+    filter_model_check_questions,
     format_question_prompt,
     load_model_check_questions,
     parse_model_choice,
     render_model_check_markdown,
+    run_model_check,
     run_model_check_for_node,
 )
 
@@ -45,16 +49,16 @@ class _FakeClient:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
-def _node() -> RuntimeNode:
+def _node(name: str = "small-1", model: str = "gpt-test", fingerprint: str = "fp") -> RuntimeNode:
     return RuntimeNode(
-        name="small-1",
+        name=name,
         provider="openai",
         base_url="https://example.com/v1",
-        model="gpt-test",
+        model=model,
         api_key="key",
         extra_headers={},
         timeout_seconds=30,
-        fingerprint="fp",
+        fingerprint=fingerprint,
     )
 
 
@@ -113,6 +117,27 @@ questions:
         assert "A-Z" in str(exc)
     else:
         raise AssertionError("题库不应接受 A-Z 之外的选项")
+
+
+def test_filter_model_check_questions_by_id() -> None:
+    questions = [
+        ModelCheckQuestion(id="q1", question="1+1?", options={"A": "1", "B": "2"}, answer="B"),
+        ModelCheckQuestion(id="q2", question="2+2?", options={"A": "3", "B": "4"}, answer="B"),
+    ]
+
+    filtered_questions = filter_model_check_questions(questions, "q2")
+
+    assert [question.id for question in filtered_questions] == ["q2"]
+
+
+def test_filter_model_check_nodes_by_name_or_model() -> None:
+    nodes = [
+        ("small", _node(name="node-a", model="model-a", fingerprint="a")),
+        ("large", _node(name="node-b", model="model-b", fingerprint="b")),
+    ]
+
+    assert [node.name for _, node in filter_model_check_nodes(nodes, "node-b")] == ["node-b"]
+    assert [node.model for _, node in filter_model_check_nodes(nodes, "model-a")] == ["model-a"]
 
 
 def test_format_question_prompt_requires_single_letter_output() -> None:
@@ -185,6 +210,42 @@ def test_run_model_check_for_node_reports_answers(monkeypatch) -> None:
     assert events[1].answer.expected_answer == "B"
 
 
+def test_run_model_check_filters_question_id_and_model_name(monkeypatch, tmp_path: Path) -> None:
+    questions_path = tmp_path / "questions.yaml"
+    questions_path.write_text(
+        """
+questions:
+  - id: q1
+    question: 1+1?
+    options:
+      A: "1"
+      B: "2"
+    answer: B
+  - id: q2
+    question: 2+2?
+    options:
+      A: "3"
+      B: "4"
+    answer: B
+""",
+        encoding="utf-8",
+    )
+    fake_client = _FakeClient(["B"])
+    nodes = [
+        ("small", _node(name="node-a", model="model-a", fingerprint="a")),
+        ("large", _node(name="node-b", model="model-b", fingerprint="b")),
+    ]
+    monkeypatch.setattr("beartools.model_check._openai_client_factory", lambda node: fake_client)
+    monkeypatch.setattr("beartools.model_check.collect_model_check_nodes", lambda: nodes)
+
+    report = run_model_check(questions_path, question_id="q2", model_name="model-b")
+
+    assert report.total_questions == 1
+    assert report.questions[0].id == "q2"
+    assert len(report.results) == 1
+    assert report.results[0].node.model == "model-b"
+
+
 def test_render_model_check_markdown_includes_summary(monkeypatch) -> None:
     fake_client = _FakeClient(["B"])
     monkeypatch.setattr("beartools.model_check._openai_client_factory", lambda node: fake_client)
@@ -204,11 +265,22 @@ def test_cli_registers_model_check_command() -> None:
 
     assert result.exit_code == 0
     assert "选择题题库" in result.stdout
+    assert "--id" in result.stdout
+    assert "--model-name" in result.stdout
 
 
 def test_model_check_defaults() -> None:
     assert DEFAULT_MODEL_CHECK_QUESTIONS_PATH == Path("check/questions.yaml")
-    assert DEFAULT_MODEL_CHECK_OUTPUT_PATH == Path("output/report.md")
+    assert DEFAULT_MODEL_CHECK_OUTPUT_DIR == Path("output")
+    assert DEFAULT_MODEL_CHECK_REPORT_STEM == "report"
+
+
+def test_resolve_default_report_path_uses_timestamp() -> None:
+    from datetime import datetime
+
+    report_path = resolve_default_report_path(datetime(2026, 5, 9, 20, 30, 45))
+
+    assert report_path == Path("output/report-20260509-203045.md")
 
 
 def test_cli_progress_prints_name_model_and_base_url(monkeypatch) -> None:

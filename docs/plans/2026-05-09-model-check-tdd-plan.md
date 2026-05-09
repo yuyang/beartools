@@ -39,7 +39,7 @@
 
 - 题库使用 YAML/JSON：`questions[].id/question/options/answer`。
 - `model` 是顶层命令组，当前只提供 `check` 子命令，后续可以继续扩展其他模型工具。
-- `check` 子命令默认读取 `check/questions.yaml`，默认写入 `output/report.md`。
+- `check` 子命令默认读取 `check/questions.yaml`，默认写入 `output/report-YYYYMMDD-HHMMSS.md`。
 - 遍历 `agent.large` 和 `agent.small` 的所有去重节点。
 - 直接使用 OpenAI Chat Completions 兼容接口请求每个模型。
 - Prompt 明确要求模型只输出 `A-Z` 中的单个选项字母。
@@ -62,7 +62,7 @@
 
 ### 推荐方案
 
-采用方案 A：新增 `beartools model check [questions_path] [--output output/report.md]`，业务逻辑放在 `src/beartools/model_check.py`，命令适配放在 `src/beartools/commands/model/command.py`。
+采用方案 A：新增 `beartools model check [questions_path] [--output report.md]`，业务逻辑放在 `src/beartools/model_check.py`，命令适配放在 `src/beartools/commands/model/command.py`。
 
 ## Grill Gate
 
@@ -113,7 +113,7 @@ questions:
 - 单模型两题评测能统计正确数、总数和正确率。
 - Markdown 报告包含汇总和明细。
 - CLI 注册了 `model check` 命令组和子命令。
-- `model check` 在未传参时使用默认 `check/questions.yaml` 和 `output/report.md`。
+- `model check` 在未传参时使用默认 `check/questions.yaml` 和 `output/report-YYYYMMDD-HHMMSS.md`。
 
 红灯策略：
 
@@ -141,7 +141,7 @@ uv run mypy .
 人工验收：
 
 - `beartools model check --help` 显示题库参数。
-- 默认题库位于 `check/questions.yaml`，默认报告输出到 `output/report.md`。
+- 默认题库位于 `check/questions.yaml`，默认报告输出到 `output/report-YYYYMMDD-HHMMSS.md`。
 - 提供一份 report Markdown 示例给用户查看字段和格式。
 - 使用本地 mock 测试不触发真实 LLM 请求。
 - 真实模型评测依赖用户本地 `config/beartools.yaml` / secrets 中的 API key 和网关可用性，不作为自动化测试门禁。
@@ -179,21 +179,22 @@ uv run mypy .
 
 ## 最终实现记录
 
-- 新增 `beartools model check [questions_path] --output output/report.md`。
-- 默认题库为 `check/questions.yaml`，默认报告为 `output/report.md`。
+- 新增 `beartools model check [questions_path] --output report.md`。
+- 默认题库为 `check/questions.yaml`，默认报告为 `output/report-YYYYMMDD-HHMMSS.md`。
 - `model` 顶层命令组当前只有 `check` 子命令，后续可以继续扩展。
 - 题库选项只允许 `A-Z`；模型输出必须严格等于其中一个合法选项，否则判错。
 - Prompt 已明确要求只输出单个选项字母，不输出解释、标点、空格或前后缀。
 - 报告包含模型维度汇总表和逐题明细表。
 - CLI 在控制台逐题输出评测进度，包含总进度、当前模型和当前题目；每题完成后输出正确或错误，错误时包含题目 id、模型结果和正确答案。
+- `--id` 可以只测试指定题目 ID；`--model-name` / `-m` 可以只测试匹配的配置节点 name 或 model。
 
 ## 最终 Verify 结果
 
-- `uv run pytest tests/test_model_check.py tests/test_cli_entrypoint.py -xvs`：通过，11 passed；增加 console 进度后相关测试为 12 passed。
+- `uv run pytest tests/test_model_check.py tests/test_cli_entrypoint.py -xvs`：通过，11 passed；增加 console 进度后相关测试为 12 passed；增加 `--id` / `--model-name` 后相关测试为 18 passed。
 - `uv run ruff check src/beartools/model_check.py src/beartools/commands/model tests/test_model_check.py src/beartools/cli.py`：通过。
 - `uv run mypy .`：通过。
 - `uv run ruff check .`：通过。
-- `uv run beartools model check --help`：通过，显示默认题库 `check/questions.yaml` 和默认报告 `output/report.md`。
+- `uv run beartools model check --help`：通过，显示默认题库 `check/questions.yaml` 和时间戳报告说明。
 - `uv run pytest tests/ -xvs`：未完全通过，停在既有 `tests/test_doctor.py::TestDoctorCommand::test_run_single_check_logs_begin_message`，当前代码输出 `开始检查 llm`，测试期待 `begin to check llm`。该失败与本次 model check 改动无关。
 
 ## Report 示例

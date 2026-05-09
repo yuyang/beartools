@@ -422,7 +422,7 @@ async def run_codex_pic_async(
     _log_pic_stage("pic_started", source=md_path, original_prompt=prompt)
     refine_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS)
 
-    console.print(f"[pic] 开始优化做图提示词（超时 {refine_timeout_seconds}s）...", style="cyan")
+    console.print(f"[pic] 开始优化做图提示词：{md_path.name}（超时 {refine_timeout_seconds}s）...", style="cyan")
     logger.info("开始优化做图提示词: md_path=%s model=%s timeout=%ss", md_path, config.model, refine_timeout_seconds)
     refine_started_at = time.monotonic()
     try:
@@ -453,7 +453,9 @@ async def run_codex_pic_async(
         token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
     )
     image_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS)
-    console.print(f"[pic] 提示词优化完成，开始生成图片（超时 {image_timeout_seconds}s）...", style="cyan")
+    console.print(
+        f"[pic] 提示词优化完成：{md_path.name}，开始生成图片（超时 {image_timeout_seconds}s）...", style="cyan"
+    )
     logger.info(
         "开始生成图片: md_path=%s pic_model=%s size=%s quality=%s timeout=%ss",
         md_path,
@@ -466,15 +468,6 @@ async def run_codex_pic_async(
     client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, timeout=float(image_timeout_seconds))
     image_started_at = time.monotonic()
     trace_payload["image_request_started_at"] = round(time.time(), 3)
-    logger.info(
-        "即将请求图片生成接口: md_path=%s pic_model=%s size=%s quality=%s response_format=%s output_format=%s",
-        md_path,
-        config.pic_model,
-        pic_size,
-        pic_quality,
-        pic_response_format,
-        pic_output_format,
-    )
     _write_pic_trace(trace_output_file, trace_payload)
     try:
         response: ImagesResponse = await client.with_options(timeout=float(image_timeout_seconds)).images.generate(
@@ -505,6 +498,7 @@ async def run_codex_pic_async(
     decode_started_at = time.monotonic()
     image_bytes = base64.b64decode(_extract_image_b64_json(response))
     trace_payload["image_decode_elapsed_seconds"] = round(time.monotonic() - decode_started_at, 3)
+    console.print(f"[pic] 图片生成完成，开始写入结果文件：{image_output_file}...", style="cyan")
     write_started_at = time.monotonic()
     image_output_file.write_bytes(image_bytes)
     trace_payload["image_write_elapsed_seconds"] = round(time.monotonic() - write_started_at, 3)
@@ -524,7 +518,6 @@ async def run_codex_pic_async(
         token_usage=image_token_usage,
         output_file=image_output_file,
     )
-    console.print("[pic] 图片生成完成，开始写入结果文件...", style="cyan")
     logger.info("图片生成完成: image_output=%s trace_output=%s", image_output_file, trace_output_file)
 
     return CodexPicResult(

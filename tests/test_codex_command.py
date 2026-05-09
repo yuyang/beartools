@@ -709,7 +709,9 @@ def test_run_codex_picedit_strips_existing_version_suffix(tmp_path: Path, monkey
     assert result.trace_output_file == image_file.parent / "p2_version_002.trace.log"
 
 
-def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_codex_pic_uses_fixed_output_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     md_file = tmp_path / "input" / "codex" / "banner.md"
     md_file.parent.mkdir(parents=True)
     md_file.write_text("生成图片", encoding="utf-8")
@@ -769,6 +771,7 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
     )
 
     result = run_codex_pic(md_path=md_file)
+    captured_output = capsys.readouterr().out
 
     assert captured["api_key"] == "token"
     assert captured["base_url"] == "https://example.com/v1"
@@ -787,6 +790,9 @@ def test_run_codex_pic_uses_fixed_output_dir(tmp_path: Path, monkeypatch: pytest
     assert result.image_output_file == Path("output") / "pic" / "banner" / "banner.png"
     assert result.image_output_file.read_bytes() == b"hello"
     assert result.trace_output_file == Path("output") / "pic" / "banner" / "banner.trace.log"
+    assert "开始优化做图提示词：banner.md" in captured_output
+    assert "提示词优化完成：banner.md，开始生成图片" in captured_output
+    assert "图片生成完成，开始写入结果文件：output/pic/banner/banner.png" in captured_output
     trace_text = result.trace_output_file.read_text(encoding="utf-8")
     assert '"status": "completed"' in trace_text
     assert '"refine_timeout_seconds": 300' in trace_text
@@ -884,7 +890,7 @@ def test_run_codex_pic_excludes_b64_payload_from_trace(tmp_path: Path, monkeypat
     assert "should-not-be-used-when-model-dump-exists" not in trace_text
 
 
-def test_run_codex_pic_logs_before_request_and_writes_request_started_at(
+def test_run_codex_pic_does_not_log_before_request_and_writes_request_started_at(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     md_file = tmp_path / "input" / "codex" / "poster.md"
@@ -940,8 +946,7 @@ def test_run_codex_pic_logs_before_request_and_writes_request_started_at(
 
     run_codex_pic(md_path=md_file)
 
-    assert "即将请求图片生成接口" in caplog.text
-    assert "md_path=" in caplog.text
+    assert "即将请求图片生成接口" not in caplog.text
     trace_text = (Path("output") / "pic" / "poster" / "poster.trace.log").read_text(encoding="utf-8")
     assert '"image_request_started_at": ' in trace_text
 

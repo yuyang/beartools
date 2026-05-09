@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -9,8 +10,9 @@ from rich.table import Table
 import typer
 
 from beartools.model_check import (
-    DEFAULT_MODEL_CHECK_OUTPUT_PATH,
+    DEFAULT_MODEL_CHECK_OUTPUT_DIR,
     DEFAULT_MODEL_CHECK_QUESTIONS_PATH,
+    DEFAULT_MODEL_CHECK_REPORT_STEM,
     ModelCheckAnswerEvent,
     ModelCheckProgressEvent,
     ModelCheckReport,
@@ -77,16 +79,26 @@ def _print_answer(event: ModelCheckAnswerEvent) -> None:
     )
 
 
+def resolve_default_report_path(now: datetime | None = None) -> Path:
+    """生成默认报告路径。"""
+
+    resolved_now = now or datetime.now()
+    timestamp = resolved_now.strftime("%Y%m%d-%H%M%S")
+    return DEFAULT_MODEL_CHECK_OUTPUT_DIR / f"{DEFAULT_MODEL_CHECK_REPORT_STEM}-{timestamp}.md"
+
+
 def check(
     questions_path: Path = typer.Argument(  # noqa: B008
         DEFAULT_MODEL_CHECK_QUESTIONS_PATH,
         help="选择题题库 YAML/JSON 文件路径",
     ),
-    output_file: Path = typer.Option(  # noqa: B008
-        DEFAULT_MODEL_CHECK_OUTPUT_PATH,
+    question_id: str | None = typer.Option(None, "--id", help="只测试指定题目 ID"),
+    model_name: str | None = typer.Option(None, "--model-name", "-m", help="只测试指定模型 name 或 model"),
+    output_file: Path | None = typer.Option(  # noqa: B008
+        None,
         "--output",
         "-o",
-        help="Markdown 报告输出文件",
+        help="Markdown 报告输出文件，默认使用 output/report-YYYYMMDD-HHMMSS.md",
     ),
 ) -> None:
     """对配置中的所有 LLM 模型执行选择题评测。"""
@@ -94,6 +106,8 @@ def check(
     try:
         report = run_model_check(
             questions_path,
+            question_id=question_id,
+            model_name=model_name,
             progress_callback=_print_progress,
             answer_callback=_print_answer,
         )
@@ -102,9 +116,10 @@ def check(
         raise typer.Exit(1) from exc
 
     _print_report(report)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(render_model_check_markdown(report), encoding="utf-8")
-    console.print(f"报告已写入: {output_file}", style="green")
+    resolved_output_file = output_file or resolve_default_report_path()
+    resolved_output_file.parent.mkdir(parents=True, exist_ok=True)
+    resolved_output_file.write_text(render_model_check_markdown(report), encoding="utf-8")
+    console.print(f"报告已写入: {resolved_output_file}", style="green")
 
 
 model_app.command("check", help="对配置中的所有 LLM 模型执行选择题评测")(check)

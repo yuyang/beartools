@@ -16,7 +16,8 @@ from beartools.config import AgentNodeConfig, get_config
 from beartools.llm.runtime import RuntimeNode
 
 DEFAULT_MODEL_CHECK_QUESTIONS_PATH = Path("check/questions.yaml")
-DEFAULT_MODEL_CHECK_OUTPUT_PATH = Path("output/report.md")
+DEFAULT_MODEL_CHECK_OUTPUT_DIR = Path("output")
+DEFAULT_MODEL_CHECK_REPORT_STEM = "report"
 ALLOWED_MODEL_CHECK_CHOICES = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 
@@ -235,6 +236,23 @@ def load_model_check_questions(path: Path) -> list[ModelCheckQuestion]:
     return questions
 
 
+def filter_model_check_questions(
+    questions: list[ModelCheckQuestion],
+    question_id: str | None,
+) -> list[ModelCheckQuestion]:
+    """按题目 ID 过滤题库。"""
+
+    if question_id is None or not question_id.strip():
+        return questions
+
+    normalized_question_id = question_id.strip()
+    filtered_questions = [question for question in questions if question.id == normalized_question_id]
+    if not filtered_questions:
+        available_ids = ", ".join(question.id for question in questions)
+        raise ValueError(f"未找到题目 ID: {normalized_question_id}，可用题目: {available_ids}")
+    return filtered_questions
+
+
 def _runtime_nodes_from_config_nodes(config_nodes: list[AgentNodeConfig]) -> list[RuntimeNode]:
     nodes: list[RuntimeNode] = []
     seen_fingerprints: set[str] = set()
@@ -260,6 +278,27 @@ def collect_model_check_nodes() -> list[tuple[str, RuntimeNode]]:
             candidates.append((tier, node))
             seen_fingerprints.add(node.fingerprint)
     return candidates
+
+
+def filter_model_check_nodes(
+    nodes: list[tuple[str, RuntimeNode]],
+    model_name: str | None,
+) -> list[tuple[str, RuntimeNode]]:
+    """按模型 name 或 model 过滤节点。"""
+
+    if model_name is None or not model_name.strip():
+        return nodes
+
+    normalized_model_name = model_name.strip()
+    filtered_nodes = [
+        (tier, node)
+        for tier, node in nodes
+        if node.name == normalized_model_name or node.model == normalized_model_name
+    ]
+    if not filtered_nodes:
+        available_models = ", ".join(f"{tier}/{node.name}/{node.model}" for tier, node in nodes)
+        raise RuntimeError(f"未找到模型: {normalized_model_name}，可用模型: {available_models}")
+    return filtered_nodes
 
 
 def _openai_client_factory(node: RuntimeNode) -> _OpenAIClientProtocol:
@@ -425,13 +464,15 @@ def run_model_check_for_node(
 def run_model_check(
     questions_path: Path,
     *,
+    question_id: str | None = None,
+    model_name: str | None = None,
     progress_callback: ModelCheckProgressCallback | None = None,
     answer_callback: ModelCheckAnswerCallback | None = None,
 ) -> ModelCheckReport:
     """执行模型选择题评测。"""
 
-    questions = load_model_check_questions(questions_path)
-    nodes = collect_model_check_nodes()
+    questions = filter_model_check_questions(load_model_check_questions(questions_path), question_id)
+    nodes = filter_model_check_nodes(collect_model_check_nodes(), model_name)
     if not nodes:
         raise RuntimeError("未配置任何 agent.large 或 agent.small 模型节点")
 
