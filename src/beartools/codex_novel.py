@@ -20,7 +20,7 @@ from beartools.prompt import get_prompt_manager
 
 logger = get_logger(__name__)
 console = Console()
-MAX_NOVEL_INPUT_CHARS = 10000
+MAX_NOVEL_INPUT_CHARS = 30000
 MIN_NOVEL_SCENE_COUNT = 1
 MAX_NOVEL_SCENE_COUNT = 12
 NOVEL_OUTPUT_ROOT = Path("output") / "novel"

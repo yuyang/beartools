@@ -653,7 +653,7 @@ def test_run_codex_novel_writes_prompts_summary_and_uses_novel_output_dir(
     caplog.set_level("INFO")
     input_file = tmp_path / "input" / "long.md"
     input_file.parent.mkdir(parents=True)
-    input_file.write_text("甲" * 10005, encoding="utf-8")
+    input_file.write_text("甲" * 30005, encoding="utf-8")
     captured: dict[str, object] = {}
 
     async def fake_select_novel_scenes_async(
@@ -730,7 +730,7 @@ def test_run_codex_novel_writes_prompts_summary_and_uses_novel_output_dir(
         output_format="webp",
     )
 
-    assert captured["text"] == "甲" * 10000
+    assert captured["text"] == "甲" * 30000
     assert captured["n"] == 2
     assert captured["source_name"] == "long.md"
     assert captured["model"] == "grok-3-mini"
