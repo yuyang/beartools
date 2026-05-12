@@ -12,11 +12,10 @@ log:
 
 # 健康检查配置
 doctor:
-  # 启用的检查项列表，默认启用所有检查
+  # 启用的检查项列表；默认不包含 siyuan 本地服务检查
   enabled_checks:
     - "google_ping"
     - "opencli"
-    - "siyuan"
     - "llm"
   
   # 各检查项的具体配置
@@ -43,7 +42,7 @@ doctor:
       timeout: 3
       fail_on_error: false
     
-    # Siyuan思源笔记服务检查配置
+    # Siyuan思源笔记服务检查配置；需要时可手动加入 enabled_checks
     siyuan:
       # 超时时间（秒），默认：2
       timeout: 2

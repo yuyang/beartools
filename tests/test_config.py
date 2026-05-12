@@ -356,12 +356,12 @@ agent:
         assert reloaded_config.agent.small[0].name == "candidate-b"
         assert reloaded_config.agent.small[0].timeout_seconds == 18
 
-    def test_doctor_enabled_checks_defaults_include_siyuan(self) -> None:
+    def test_doctor_enabled_checks_defaults_exclude_siyuan(self) -> None:
         self._write_config("doctor: {}\n")
 
         config = load_config()
 
-        assert config.doctor.enabled_checks == ["google_ping", "opencli", "siyuan", "llm"]
+        assert config.doctor.enabled_checks == ["google_ping", "opencli", "llm"]
 
     def test_invalid_doctor_enabled_checks_falls_back_to_default(self) -> None:
         self._write_config(
@@ -373,7 +373,7 @@ doctor:
 
         config = load_config()
 
-        assert config.doctor.enabled_checks == ["google_ping", "opencli", "siyuan", "llm"]
+        assert config.doctor.enabled_checks == ["google_ping", "opencli", "llm"]
 
     def test_google_ping_extended_config_is_parsed(self) -> None:
         self._write_config(

@@ -2,16 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Final, Literal, Protocol, cast, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
-from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
 
 from beartools.config import AgentNodeConfig, get_config
 
-_PROBE_MESSAGES: Final[list[dict[str, str]]] = [{"role": "user", "content": "ping"}]
-_PROBE_FAILURE_MESSAGE_KEYWORDS: Final[tuple[str, ...]] = ()
 AgentTier = Literal["large", "small"]
 
 
@@ -140,16 +138,12 @@ _runtime_instance: LLRuntime | None = None
 _runtime_lock = Lock()
 
 
-class _OpenAIChatCompletionsProtocol(Protocol):
+class _OpenAIResponsesProtocol(Protocol):
     def create(self, **kwargs: object) -> object: ...
 
 
-class _OpenAIChatProtocol(Protocol):
-    completions: _OpenAIChatCompletionsProtocol
-
-
 class _OpenAIClientProtocol(Protocol):
-    chat: _OpenAIChatProtocol
+    responses: _OpenAIResponsesProtocol
 
 
 class _OpenAIClientFactory(Protocol):
@@ -163,19 +157,19 @@ class _OpenAIClientFactory(Protocol):
     ) -> _OpenAIClientProtocol: ...
 
 
-class _ProbeResponseWithChoices(Protocol):
-    choices: object
+class _ProbeResponseWithOutputText(Protocol):
+    output_text: object
 
 
-class _ProbeChoiceWithMessage(Protocol):
-    message: object
+class _ProbeResponseWithOutput(Protocol):
+    output: object
 
 
-class _ProbeMessageWithContent(Protocol):
+class _ProbeOutputMessageWithContent(Protocol):
     content: object
 
 
-class _ProbeContentPartWithText(Protocol):
+class _ProbeOutputContentWithText(Protocol):
     text: object
 
 
@@ -221,40 +215,48 @@ def _collect_configured_nodes(tier: AgentTier) -> list[RuntimeNode]:
 
 
 def _ensure_probe_response_has_text(response: object) -> None:
-    """确保探测响应里至少包含一段可识别文本。"""
-    if not hasattr(response, "choices"):
+    """确保 Responses API 探测响应至少包含一段可识别文本。"""
+    if hasattr(response, "output_text"):
+        response_with_output_text = cast(_ProbeResponseWithOutputText, response)
+        output_text = response_with_output_text.output_text
+        if isinstance(output_text, str) and output_text.strip():
+            return None
+
+    if not hasattr(response, "output"):
         raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
 
-    response_with_choices = cast(_ProbeResponseWithChoices, response)
-    choices = response_with_choices.choices
-    if not isinstance(choices, list) or not choices:
+    response_with_output = cast(_ProbeResponseWithOutput, response)
+    output = response_with_output.output
+    if not isinstance(output, list) or not output:
         raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
 
-    first_choice = choices[0]
-    if not hasattr(first_choice, "message"):
-        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
-
-    choice_with_message = cast(_ProbeChoiceWithMessage, first_choice)
-    message = choice_with_message.message
-    if not hasattr(message, "content"):
-        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
-
-    message_with_content = cast(_ProbeMessageWithContent, message)
-    content = message_with_content.content
-
-    if isinstance(content, str) and content.strip():
-        return None
-
-    if isinstance(content, list):
-        for part in content:
-            if not hasattr(part, "text"):
-                continue
-            part_with_text = cast(_ProbeContentPartWithText, part)
-            text = part_with_text.text
-            if isinstance(text, str) and text.strip():
-                return None
+    for item in output:
+        if not hasattr(item, "content"):
+            continue
+        item_with_content = cast(_ProbeOutputMessageWithContent, item)
+        if _content_has_probe_text(item_with_content.content):
+            return None
 
     raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
+
+
+def _content_has_probe_text(content: object) -> bool:
+    """判断 Responses output item 的 content 是否包含可识别文本。"""
+
+    if isinstance(content, str) and content.strip():
+        return True
+
+    if not isinstance(content, list):
+        return False
+
+    for part in content:
+        if not hasattr(part, "text"):
+            continue
+        part_with_text = cast(_ProbeOutputContentWithText, part)
+        text = part_with_text.text
+        if isinstance(text, str) and text.strip():
+            return True
+    return False
 
 
 def _probe_node(node: RuntimeNode) -> None:
@@ -264,11 +266,17 @@ def _probe_node(node: RuntimeNode) -> None:
         timeout=float(node.timeout_seconds),
         default_headers=node.extra_headers,
     )
-    response = client.chat.completions.create(
+    response = client.responses.create(
         model=node.model,
-        messages=_PROBE_MESSAGES,
+        input="ping",
     )
     _ensure_probe_response_has_text(response)
+
+
+def probe_runtime_node(node: RuntimeNode) -> None:
+    """探测运行时节点当前是否可用。"""
+
+    _probe_node(node)
 
 
 def _sanitize_probe_failure_reason(error: BaseException) -> str:
@@ -358,6 +366,9 @@ def _should_invalidate_by_type(error: BaseException) -> bool:
     if isinstance(error, ModelAPIError):
         return _should_invalidate_model_api_error(error)
 
+    if isinstance(error, UnexpectedModelBehavior):
+        return True
+
     if isinstance(error, (APIConnectionError, APITimeoutError, TimeoutError)):
         return True
 
@@ -425,6 +436,7 @@ __all__ = [
     "get_llm_runtime",
     "get_active_llm_node",
     "mark_active_llm_node_failed",
+    "probe_runtime_node",
     "reset_llm_runtime",
     "should_invalidate_node",
 ]

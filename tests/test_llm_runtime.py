@@ -12,7 +12,7 @@ from unittest.mock import patch
 import httpx
 from openai import APIConnectionError, APITimeoutError
 from pydantic import BaseModel, ValidationError
-from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
 
 pytest = importlib.import_module("pytest")
 
@@ -425,41 +425,20 @@ class TestLLRuntime:
             with pytest.raises(httpx.LocalProtocolError, match="bad request framing"):
                 runtime_module.create_llm_runtime()
 
-    def test_probe_node_uses_minimal_openai_client_completion_request(self) -> None:
+    def test_probe_node_uses_minimal_openai_responses_request(self) -> None:
         node = create_runtime_node("primary")
 
-        completion_calls: list[dict[str, object]] = []
+        response_calls: list[dict[str, object]] = []
         client_kwargs: list[dict[str, object]] = []
 
-        class FakeChatCompletions:
+        class FakeResponses:
             @staticmethod
             def create(**kwargs: object) -> object:
-                completion_calls.append(kwargs)
-                return type(
-                    "FakeCompletionResponse",
-                    (),
-                    {
-                        "choices": [
-                            type(
-                                "FakeChoice",
-                                (),
-                                {
-                                    "message": type(
-                                        "FakeMessage",
-                                        (),
-                                        {"content": "pong"},
-                                    )()
-                                },
-                            )()
-                        ]
-                    },
-                )()
-
-        class FakeChat:
-            completions = FakeChatCompletions()
+                response_calls.append(kwargs)
+                return SimpleNamespace(output_text="pong")
 
         class FakeOpenAIClient:
-            chat = FakeChat()
+            responses = FakeResponses()
 
         def fake_client_factory(**kwargs: object) -> FakeOpenAIClient:
             client_kwargs.append(kwargs)
@@ -472,30 +451,43 @@ class TestLLRuntime:
         assert client_kwargs[0]["api_key"] == node.api_key
         assert client_kwargs[0]["timeout"] == node.timeout_seconds
         assert client_kwargs[0]["default_headers"] == node.extra_headers
-        assert completion_calls
-        assert completion_calls[0]["model"] == node.model
-        assert completion_calls[0]["messages"] == [{"role": "user", "content": "ping"}]
-        assert "max_tokens" not in completion_calls[0]
+        assert response_calls
+        assert response_calls[0]["model"] == node.model
+        assert response_calls[0]["input"] == "ping"
+        assert "max_output_tokens" not in response_calls[0]
 
     def test_probe_node_accepts_response_with_text_content(self) -> None:
         node = create_runtime_node("primary")
 
-        class FakeChatCompletions:
+        class FakeResponses:
             @staticmethod
             def create(**_: object) -> object:
                 return SimpleNamespace(
-                    choices=[
+                    output=[
                         SimpleNamespace(
-                            message=SimpleNamespace(content="pong"),
+                            content=[
+                                SimpleNamespace(text="pong"),
+                            ],
                         )
-                    ]
+                    ],
                 )
 
-        class FakeChat:
-            completions = FakeChatCompletions()
+        class FakeOpenAIClient:
+            responses = FakeResponses()
+
+        with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
+            runtime_module._probe_node(node)
+
+    def test_probe_node_accepts_response_with_output_text(self) -> None:
+        node = create_runtime_node("primary")
+
+        class FakeResponses:
+            @staticmethod
+            def create(**_: object) -> object:
+                return SimpleNamespace(output_text="pong")
 
         class FakeOpenAIClient:
-            chat = FakeChat()
+            responses = FakeResponses()
 
         with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
             runtime_module._probe_node(node)
@@ -503,22 +495,21 @@ class TestLLRuntime:
     def test_probe_node_rejects_response_without_text_content(self) -> None:
         node = create_runtime_node("primary")
 
-        class FakeChatCompletions:
+        class FakeResponses:
             @staticmethod
             def create(**_: object) -> object:
                 return SimpleNamespace(
-                    choices=[
+                    output=[
                         SimpleNamespace(
-                            message=SimpleNamespace(content=None),
+                            content=[
+                                SimpleNamespace(text=""),
+                            ],
                         )
-                    ]
+                    ],
                 )
 
-        class FakeChat:
-            completions = FakeChatCompletions()
-
         class FakeOpenAIClient:
-            chat = FakeChat()
+            responses = FakeResponses()
 
         with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
             with pytest.raises(
@@ -555,6 +546,7 @@ class TestShouldInvalidateNode:
             (StatusCodeError(429, "rate limit exceeded"), False),
             (StatusCodeError(400, "bad request"), False),
             (Exception("api key is missing in business payload"), False),
+            (UnexpectedModelBehavior("invalid chat completion response"), True),
             (Exception("domain validation failed with 401 code"), False),
             (Exception("404 record not found in local business table"), False),
         ],

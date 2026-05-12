@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+from email import message_from_bytes, policy
+from email.message import Message
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from google.auth.exceptions import RefreshError
 import pytest
 from typer.testing import CliRunner
 
@@ -48,6 +52,13 @@ def test_gmail_fetch_uses_default_days() -> None:
     assert result.exit_code == 0
     assert "--days" in result.stdout
     assert "默认" in result.stdout
+
+
+def test_gmail_send_command_is_registered() -> None:
+    result = runner.invoke(app, ["gmail", "--help"])
+
+    assert result.exit_code == 0
+    assert "send" in result.stdout
 
 
 def test_load_config_reads_gmail_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,6 +133,45 @@ def test_build_gmail_query_uses_inbox_and_days() -> None:
     from beartools.gmail import build_gmail_query
 
     assert build_gmail_query(3) == "label:inbox newer_than:3d"
+
+
+def test_gmail_scopes_include_send_permission() -> None:
+    from beartools.gmail import SCOPES
+
+    assert "https://www.googleapis.com/auth/gmail.readonly" in SCOPES
+    assert "https://www.googleapis.com/auth/gmail.send" in SCOPES
+
+
+def test_validate_email_address_rejects_invalid_values() -> None:
+    from beartools.gmail import validate_email_address
+
+    assert validate_email_address("user@example.com") == "user@example.com"
+    assert validate_email_address(" user.name+tag@example.co.uk ") == "user.name+tag@example.co.uk"
+
+    for value in ["", "missing-at", "user@", "@example.com", "user@example", "a\nb@example.com"]:
+        with pytest.raises(ValueError, match="邮箱地址格式不正确"):
+            validate_email_address(value)
+
+
+def test_create_plain_text_message_builds_gmail_raw_payload() -> None:
+    from beartools.gmail import create_plain_text_message
+
+    payload = create_plain_text_message(
+        send_to="user@example.com",
+        title="测试标题",
+        content="第一行\n第二行",
+    )
+
+    raw_message = payload["raw"]
+    assert isinstance(raw_message, str)
+    decoded = base64.urlsafe_b64decode(raw_message.encode("utf-8"))
+    message = message_from_bytes(decoded, policy=policy.default)
+
+    assert isinstance(message, Message)
+    assert message["To"] == "user@example.com"
+    assert message["Subject"] == "测试标题"
+    assert message.get_content_type() == "text/plain"
+    assert message.get_payload(decode=True).decode("utf-8") == "第一行\n第二行\n"
 
 
 def test_extract_body_text_prefers_text_plain() -> None:
@@ -273,6 +323,185 @@ def test_gmail_fetch_command_logs_timeout_and_prints_brief_message() -> None:
     assert result.exit_code == 1
     assert "Gmail 抓取超时，请稍后重试" in result.stdout
     assert "Traceback" not in result.stdout
+
+
+def test_send_plain_text_email_calls_gmail_send() -> None:
+    from beartools.config import GmailConfig
+    from beartools.gmail import send_plain_text_email
+
+    gmail_config = GmailConfig(
+        client_secret_file=Path("config/client_secret.json"),
+        token_file=Path("config/gmail.token.json"),
+        output_dir=Path("email"),
+        default_days=3,
+        max_results=100,
+    )
+
+    class FakeSendRequest:
+        def execute(self) -> dict[str, object]:
+            return {"id": "message-123"}
+
+    class FakeMessagesApi:
+        def __init__(self) -> None:
+            self.sent_body: dict[str, object] | None = None
+
+        def send(self, *, userId: str, body: dict[str, object]) -> FakeSendRequest:
+            assert userId == "me"
+            self.sent_body = body
+            return FakeSendRequest()
+
+    fake_messages_api = FakeMessagesApi()
+
+    class FakeUsersApi:
+        def messages(self) -> FakeMessagesApi:
+            return fake_messages_api
+
+    class FakeService:
+        def users(self) -> FakeUsersApi:
+            return FakeUsersApi()
+
+    with patch("beartools.gmail.build_gmail_service", return_value=FakeService()):
+        result = send_plain_text_email(
+            send_to="user@example.com",
+            title="测试标题",
+            content="正文",
+            gmail_config=gmail_config,
+        )
+
+    assert result.message_id == "message-123"
+    assert fake_messages_api.sent_body is not None
+    assert isinstance(fake_messages_api.sent_body["raw"], str)
+
+
+def test_gmail_send_command_prompts_and_converts_literal_newline() -> None:
+    from beartools.gmail import GmailSendResult
+
+    with patch(
+        "beartools.commands.gmail.command.send_plain_text_email",
+        return_value=GmailSendResult(message_id="message-123", send_to="user@example.com"),
+    ) as send_mock:
+        result = runner.invoke(app, ["gmail", "send"], input="user@example.com\n测试标题\n第一行\\n第二行\n")
+
+    assert result.exit_code == 0
+    send_mock.assert_called_once_with(send_to="user@example.com", title="测试标题", content="第一行\n第二行")
+    assert "发送成功: message-123" in result.stdout
+    assert "第一行" not in result.stdout
+
+
+def test_gmail_send_command_reprompts_invalid_email() -> None:
+    from beartools.gmail import GmailSendResult
+
+    with patch(
+        "beartools.commands.gmail.command.send_plain_text_email",
+        return_value=GmailSendResult(message_id="message-123", send_to="user@example.com"),
+    ) as send_mock:
+        result = runner.invoke(app, ["gmail", "send"], input="bad-email\nuser@example.com\n测试标题\n正文\n")
+
+    assert result.exit_code == 0
+    assert "邮箱地址格式不正确" in result.stdout
+    send_mock.assert_called_once_with(send_to="user@example.com", title="测试标题", content="正文")
+
+
+def test_gmail_send_command_logs_failure_and_prints_brief_message() -> None:
+    with patch("beartools.commands.gmail.command.send_plain_text_email", side_effect=TimeoutError("timed out")):
+        with patch("beartools.commands.gmail.command.logger", new=Mock()):
+            result = runner.invoke(app, ["gmail", "send"], input="user@example.com\n测试标题\n敏感正文\n")
+
+    assert result.exit_code == 1
+    assert "Gmail 发送失败，请查看日志文件" in result.stdout
+    assert "敏感正文" not in result.stdout
+    assert "Traceback" not in result.stdout
+
+
+def test_load_credentials_falls_back_to_oauth_when_refresh_scope_is_invalid(tmp_path: Path) -> None:
+    from beartools.config import GmailConfig
+    from beartools.gmail import _load_credentials
+
+    token_file = tmp_path / "gmail.token.json"
+    token_file.write_text("{}", encoding="utf-8")
+    client_secret_file = tmp_path / "client_secret.json"
+    client_secret_file.write_text("{}", encoding="utf-8")
+    gmail_config = GmailConfig(
+        client_secret_file=client_secret_file,
+        token_file=token_file,
+        output_dir=tmp_path,
+        default_days=3,
+        max_results=100,
+    )
+
+    class ExpiredCredentials:
+        valid = False
+        expired = True
+        refresh_token = "old-refresh-token"
+
+        def refresh(self, request: object) -> None:
+            del request
+            raise RefreshError("invalid_scope: Bad Request")
+
+        def to_json(self) -> str:
+            return '{"token": "old"}'
+
+    class FreshCredentials:
+        valid = True
+        expired = False
+        refresh_token = "new-refresh-token"
+
+        def refresh(self, request: object) -> None:
+            del request
+
+        def to_json(self) -> str:
+            return '{"token": "new"}'
+
+    fresh_credentials = FreshCredentials()
+
+    class FakeFlow:
+        def run_local_server(self, *, port: int) -> FreshCredentials:
+            assert port == 0
+            return fresh_credentials
+
+    with patch("beartools.gmail.Credentials.from_authorized_user_file", return_value=ExpiredCredentials()):
+        with patch("beartools.gmail.InstalledAppFlow.from_client_secrets_file", return_value=FakeFlow()) as flow_mock:
+            loaded_credentials = _load_credentials(gmail_config)
+
+    assert loaded_credentials is fresh_credentials
+    assert token_file.read_text(encoding="utf-8") == '{"token": "new"}'
+    flow_mock.assert_called_once()
+
+
+def test_load_credentials_does_not_fallback_to_oauth_for_refresh_network_error(tmp_path: Path) -> None:
+    from beartools.config import GmailConfig
+    from beartools.gmail import _load_credentials
+
+    token_file = tmp_path / "gmail.token.json"
+    token_file.write_text("{}", encoding="utf-8")
+    client_secret_file = tmp_path / "client_secret.json"
+    client_secret_file.write_text("{}", encoding="utf-8")
+    gmail_config = GmailConfig(
+        client_secret_file=client_secret_file,
+        token_file=token_file,
+        output_dir=tmp_path,
+        default_days=3,
+        max_results=100,
+    )
+
+    class ExpiredCredentials:
+        valid = False
+        expired = True
+        refresh_token = "old-refresh-token"
+
+        def refresh(self, request: object) -> None:
+            del request
+            raise RefreshError("network transport failed")
+
+        def to_json(self) -> str:
+            return '{"token": "old"}'
+
+    with patch("beartools.gmail.Credentials.from_authorized_user_file", return_value=ExpiredCredentials()):
+        with patch("beartools.gmail.InstalledAppFlow.from_client_secrets_file") as flow_mock:
+            with pytest.raises(RefreshError, match="network transport failed"):
+                _load_credentials(gmail_config)
+
+    flow_mock.assert_not_called()
 
 
 def test_fetch_gmail_summary_limits_messages_and_writes_output(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import datetime
+from email.message import EmailMessage
 from html import unescape
 from pathlib import Path
 import re
@@ -19,7 +20,8 @@ from pydantic_ai import Agent
 from beartools.config import GmailConfig, get_config
 from beartools.llm.factory import LLFactory
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"]
+EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class SummaryAgentProtocol(Protocol):
@@ -58,6 +60,12 @@ class GmailMessagesListProtocol(Protocol):
     def execute(self) -> dict[str, object]: ...
 
 
+class GmailMessagesSendProtocol(Protocol):
+    """Gmail messages.send 协议。"""
+
+    def execute(self) -> dict[str, object]: ...
+
+
 class GmailMessagesResourceProtocol(Protocol):
     """Gmail messages 资源协议。"""
 
@@ -71,6 +79,8 @@ class GmailMessagesResourceProtocol(Protocol):
     ) -> GmailMessagesListProtocol: ...
 
     def get(self, *, userId: str, id: str, format: str) -> GmailMessagesGetProtocol: ...
+
+    def send(self, *, userId: str, body: dict[str, object]) -> GmailMessagesSendProtocol: ...
 
 
 class GmailUsersResourceProtocol(Protocol):
@@ -109,10 +119,58 @@ class GmailFetchResult:
     output_file: Path
 
 
+@dataclass(slots=True)
+class GmailSendResult:
+    """Gmail 发送结果。"""
+
+    message_id: str
+    send_to: str
+
+
 def build_gmail_query(days: int) -> str:
     """构造 Gmail 查询语句。"""
 
     return f"label:inbox newer_than:{days}d"
+
+
+def validate_email_address(email_address: str) -> str:
+    """校验并规范化单个邮箱地址。"""
+
+    normalized_email = email_address.strip()
+    if not EMAIL_ADDRESS_PATTERN.fullmatch(normalized_email):
+        raise ValueError("邮箱地址格式不正确")
+    return normalized_email
+
+
+def create_plain_text_message(*, send_to: str, title: str, content: str) -> dict[str, object]:
+    """构造 Gmail API 纯文本邮件 payload。"""
+
+    message = EmailMessage()
+    message["To"] = validate_email_address(send_to)
+    message["Subject"] = title
+    message.set_content(content, subtype="plain", charset="utf-8")
+    encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+    return {"raw": encoded_message}
+
+
+def send_plain_text_email(
+    *,
+    send_to: str,
+    title: str,
+    content: str,
+    gmail_config: GmailConfig | None = None,
+) -> GmailSendResult:
+    """发送 Gmail 纯文本邮件。"""
+
+    resolved_config = gmail_config if gmail_config is not None else get_config().gmail
+    normalized_send_to = validate_email_address(send_to)
+    payload = create_plain_text_message(send_to=normalized_send_to, title=title, content=content)
+    service = build_gmail_service(resolved_config)
+    response = service.users().messages().send(userId="me", body=payload).execute()
+    message_id = response.get("id")
+    if not isinstance(message_id, str) or not message_id:
+        raise RuntimeError("Gmail API 未返回 message id")
+    return GmailSendResult(message_id=message_id, send_to=normalized_send_to)
 
 
 def limit_messages(
@@ -301,18 +359,38 @@ def _load_credentials(gmail_config: GmailConfig) -> CredentialsProtocol:
         return credentials
 
     if credentials and credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
+        try:
+            credentials.refresh(Request())
+        except Exception as exc:
+            if not _is_gmail_refresh_error(exc):
+                raise
+            credentials = _run_gmail_oauth_flow(gmail_config)
     else:
-        if not gmail_config.client_secret_file.exists():
-            raise FileNotFoundError(f"未找到 Gmail client secret 文件: {gmail_config.client_secret_file}")
-        flow = InstalledAppFlow.from_client_secrets_file(  # type: ignore[misc]
-            str(gmail_config.client_secret_file), SCOPES
-        )
-        credentials = cast(CredentialsProtocol, flow.run_local_server(port=0))  # type: ignore[misc]
+        credentials = _run_gmail_oauth_flow(gmail_config)
 
     gmail_config.token_file.parent.mkdir(parents=True, exist_ok=True)
     gmail_config.token_file.write_text(credentials.to_json(), encoding="utf-8")
     return credentials
+
+
+def _is_gmail_refresh_error(exc: BaseException) -> bool:
+    """判断是否为可通过重新授权恢复的 Gmail OAuth refresh 失败。"""
+
+    exc_type = type(exc)
+    if exc_type.__name__ != "RefreshError" or not exc_type.__module__.startswith("google.auth"):
+        return False
+    return "invalid_scope" in str(exc).lower()
+
+
+def _run_gmail_oauth_flow(gmail_config: GmailConfig) -> CredentialsProtocol:
+    """发起 Gmail 本地 OAuth 授权。"""
+
+    if not gmail_config.client_secret_file.exists():
+        raise FileNotFoundError(f"未找到 Gmail client secret 文件: {gmail_config.client_secret_file}")
+    flow = InstalledAppFlow.from_client_secrets_file(  # type: ignore[misc]
+        str(gmail_config.client_secret_file), SCOPES
+    )
+    return cast(CredentialsProtocol, flow.run_local_server(port=0))  # type: ignore[misc]
 
 
 def build_gmail_service(gmail_config: GmailConfig) -> GmailServiceProtocol:

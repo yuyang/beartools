@@ -48,7 +48,7 @@ beartools = "beartools.cli:app"
 
 | 命令 | 命令模块 | 业务模块 | 说明 |
 | --- | --- | --- | --- |
-| `beartools doctor` | `commands/doctor/command.py` | `commands/doctor/checks/*`、`llm/runtime.py` | 并发执行健康检查，默认检查网络、opencli、思源，可选 LLM |
+| `beartools doctor` | `commands/doctor/command.py` | `commands/doctor/checks/*`、`llm/runtime.py` | 并发执行健康检查，默认检查网络、opencli，可选 LLM |
 | `beartools model check` | `commands/model/command.py` | `model_check.py`、`llm/runtime.py` | 对配置中的所有 LLM 模型执行选择题评测，输出正确率报告 |
 | `beartools clear` | `commands/clear/command.py` | 无独立业务模块 | 清理临时目录内容 |
 | `beartools siyuan` | `commands/siyuan/command.py` | `siyuan.py` | 列笔记本、导出 Markdown、上传 Markdown |
@@ -56,7 +56,7 @@ beartools = "beartools.cli:app"
 | `beartools markdown` | `commands/markdown/command.py` | `markdown.py` | 将 Markdown 本地图片转为 base64 data URI |
 | `beartools bill` | `commands/bill/command.py` | `bill/*` | 账单归一化、分析、完整流水线 |
 | `beartools fetch` | `commands/fetch/command.py` | `fetch.py`、`markdown.py`、`siyuan.py` | 抓取 URL 内容，生成 Markdown，可上传思源 |
-| `beartools gmail` | `commands/gmail/command.py` | `gmail.py` | 拉取 Gmail 收件箱并生成摘要 |
+| `beartools gmail` | `commands/gmail/command.py` | `gmail.py` | 拉取 Gmail 收件箱并生成摘要；发送纯文本邮件 |
 | `beartools newsnow` | `commands/newsnow/command.py` | `newsnow.py` | 通过本地浏览器抓取 NewsNow 可见卡片 |
 | `beartools codex` | `commands/codex/command.py` | `codex.py`、`codex_pic.py` | 执行 Codex Markdown、图片生成、图片编辑、批量图片任务 |
 
@@ -83,7 +83,9 @@ beartools = "beartools.cli:app"
   - 对 `small`、`large` 两个 tier 做健康探测、去重、故障标记和轮换。
   - 对外提供 `get_active_llm_node()`、`mark_active_llm_node_failed()`、`get_llm_runtime()`。
 - `llm/factory.py`
-  - 根据当前健康节点创建 OpenAI SDK 客户端、Pydantic AI provider 和 chat model。
+  - 根据当前健康节点创建 OpenAI SDK 客户端、Pydantic AI provider 和 Responses model。
+  - `LLFactory.create()` 默认会在创建模型前重新探测当前 `small` active node；探测失败且属于可失效错误时标记节点失败并切到下一个节点。
+  - 默认走 OpenAI Responses API，避免 Chat Completions 兼容响应中 `id=None` 等 schema 差异影响 PydanticAI。
   - 隐藏不同 openai/pydantic-ai 版本对 default headers 支持差异。
 - `model_check.py`
   - 读取 `check/questions.yaml` 或指定 YAML/JSON 题库。
@@ -147,6 +149,7 @@ beartools = "beartools.cli:app"
 - `gmail.py`
   - 构造 Gmail 查询，拉取邮件列表和详情，提取正文。
   - 调用 LLM 生成摘要，并写入 Markdown 文件。
+  - 校验单个收件人邮箱，构造 Gmail API 纯文本 `raw` payload，并通过 `send_plain_text_email()` 发送邮件。
 - `newsnow.py`
   - 通过 `opencli` / 本地浏览器能力抓取 NewsNow 当前可见卡片。
   - 将页面数据渲染为 Markdown。
@@ -207,7 +210,7 @@ beartools doctor [--run-llm]
   -> commands/doctor/command.py::run_checks_stream()
        -> checks/google_ping.py
        -> checks/opencli.py
-       -> checks/siyuan.py
+       -> checks/siyuan.py，可手动启用
        -> checks/llm.py，可选
 ```
 

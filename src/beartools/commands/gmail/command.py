@@ -6,7 +6,7 @@ from rich.console import Console
 import typer
 
 from beartools.config import get_config
-from beartools.gmail import fetch_gmail_summary
+from beartools.gmail import fetch_gmail_summary, send_plain_text_email, validate_email_address
 from beartools.logger import get_logger
 
 gmail_app = typer.Typer(help="Gmail 邮件处理", add_completion=False)
@@ -42,4 +42,38 @@ def fetch(
     console.print(f"输出文件: {result.output_file}", style="green")
 
 
+def _prompt_valid_email() -> str:
+    """循环询问收件人直到邮箱格式正确。"""
+
+    while True:
+        send_to = console.input("sendto: ")
+        try:
+            return validate_email_address(send_to)
+        except ValueError:
+            console.print("邮箱地址格式不正确，请重新输入", style="red")
+
+
+def _normalize_prompt_content(content: str) -> str:
+    """将用户输入中的字面量换行标记转成真实换行。"""
+
+    return content.replace("\\n", "\n")
+
+
+def send() -> None:
+    """发送 Gmail 纯文本邮件。"""
+
+    send_to = _prompt_valid_email()
+    title = console.input("title: ")
+    content = _normalize_prompt_content(console.input("内容: "))
+    try:
+        result = send_plain_text_email(send_to=send_to, title=title, content=content)
+    # Gmail 授权和 API 客户端会抛出多种第三方异常，CLI 统一收口，避免泄露 traceback 和正文。
+    except Exception as exc:
+        logger.exception("Gmail 发送失败: send_to=%s error_type=%s", send_to, type(exc).__name__)
+        console.print("Gmail 发送失败，请查看日志文件", style="red")
+        raise typer.Exit(1) from exc
+    console.print(f"发送成功: {result.message_id}", style="green")
+
+
 gmail_app.command("fetch", help="抓取 Gmail 收件箱摘要")(fetch)
+gmail_app.command("send", help="发送 Gmail 纯文本邮件")(send)

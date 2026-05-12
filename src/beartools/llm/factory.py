@@ -1,6 +1,6 @@
 """LLM 模型工厂。
 
-根据运行时当前活动节点构造 PydanticAI 的 OpenAIChatModel。
+根据运行时当前活动节点构造 PydanticAI 的 OpenAIResponsesModel。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Protocol, cast
 
 from pydantic_ai.models import Model
 
-from beartools.llm.runtime import RuntimeNode, get_llm_runtime
+from beartools.llm.runtime import AgentTier, LLRuntime, RuntimeNode, get_llm_runtime, probe_runtime_node
 from beartools.logger import get_logger
 
 
@@ -42,12 +42,12 @@ class _OpenAIProviderFactory(Protocol):
     ) -> object: ...
 
 
-class _OpenAIChatModelFactory(Protocol):
+class _OpenAIResponsesModelFactory(Protocol):
     def __call__(self, *, model_name: str, provider: object, settings: dict[str, float]) -> Model[object]: ...
 
 
 class _PydanticAIModelsOpenAIModule(Protocol):
-    OpenAIChatModel: _OpenAIChatModelFactory
+    OpenAIResponsesModel: _OpenAIResponsesModelFactory
 
 
 class _PydanticAIProvidersOpenAIModule(Protocol):
@@ -86,7 +86,9 @@ class LLFactory:
     def create(self, node: RuntimeNode | None = None) -> Model[object]:
         """创建并返回当前活动节点对应的 PydanticAI 模型。"""
 
-        runtime_node = node or get_llm_runtime().get_active_node("small")
+        runtime_node = node or self._select_valid_node(get_llm_runtime(), tier="small")
+        if node is not None:
+            probe_runtime_node(node)
         active_logger = self.logger or _get_logger()
         active_logger.info(
             "LLM 选择节点: name=%s provider=%s base_url=%s model=%s",
@@ -106,24 +108,36 @@ class LLFactory:
         openai_module = cast(_OpenAIModule, importlib.import_module("openai"))
 
         async_openai = openai_module.AsyncOpenAI
-        openai_chat_model = pydantic_ai_models_openai.OpenAIChatModel
+        openai_responses_model = pydantic_ai_models_openai.OpenAIResponsesModel
         openai_provider = pydantic_ai_providers_openai.OpenAIProvider
 
-        if runtime_node.extra_headers:
-            if not _supports_default_headers():
-                raise LLFactoryError("当前环境的 OpenAI 客户端不支持 extra_headers，无法安全传递请求头")
-            openai_client = async_openai(
-                base_url=runtime_node.base_url,
-                api_key=runtime_node.api_key,
-                timeout=float(runtime_node.timeout_seconds),
-                default_headers=runtime_node.extra_headers,
-            )
-            provider = openai_provider(openai_client=openai_client)
-        else:
-            provider = openai_provider(base_url=runtime_node.base_url, api_key=runtime_node.api_key)
+        if runtime_node.extra_headers and not _supports_default_headers():
+            raise LLFactoryError("当前环境的 OpenAI 客户端不支持 extra_headers，无法安全传递请求头")
 
-        return openai_chat_model(
+        openai_client = async_openai(
+            base_url=runtime_node.base_url,
+            api_key=runtime_node.api_key,
+            timeout=float(runtime_node.timeout_seconds),
+            default_headers=runtime_node.extra_headers,
+        )
+        provider = openai_provider(openai_client=openai_client)
+
+        return openai_responses_model(
             model_name=runtime_node.model,
             provider=provider,
             settings={"timeout": float(runtime_node.timeout_seconds)},
         )
+
+    def _select_valid_node(self, runtime: LLRuntime, tier: AgentTier) -> RuntimeNode:
+        """选择并探测当前可用节点，失败时切换到下一个节点。"""
+
+        while True:
+            runtime_node = runtime.get_active_node(tier)
+            try:
+                probe_runtime_node(runtime_node)
+            except Exception as exc:
+                changed = runtime.mark_node_failed(runtime_node, error=exc, tier=tier)
+                if not changed:
+                    raise
+                continue
+            return runtime_node

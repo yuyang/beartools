@@ -19,9 +19,8 @@ siyuan:
 
 # 健康检查配置
 doctor:
-  # 启用的检查项列表，默认启用所有检查
+  # 启用的检查项列表；默认不包含 siyuan 本地服务检查
   enabled_checks:
-    - "siyuan"
     - "opencli"
     - "google_ping"
     - "llm"

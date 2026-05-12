@@ -13,7 +13,7 @@ import importlib
 from pathlib import Path
 from typing import Protocol, cast
 
-DEFAULT_DOCTOR_ENABLED_CHECKS = ["google_ping", "opencli", "siyuan", "llm"]
+DEFAULT_DOCTOR_ENABLED_CHECKS = ["google_ping", "opencli", "llm"]
 
 # 全局配置单例
 _config_instance: Config | None = None
