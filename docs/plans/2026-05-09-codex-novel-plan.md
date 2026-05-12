@@ -2,7 +2,7 @@
 
 ## 背景和目标
 
-用户要求按商业开发流程新增 `codex novel` 子命令：输入小说 `.txt` 或 `.md` 文件，按命令参数 `n`（默认 4）从小说中选择精彩场景，将场景简化为适合 `pic` 的文本输入，并生成 `n` 张图片。处理过程需要在 console 和 log 中都有记录。
+用户要求按商业开发流程新增 `codex novel` 子命令：输入小说 `.txt` 或 `.md` 文件，按命令参数 `n`（默认 4）从小说中选择精彩场景，将场景简化为适合 `pic` 的文本输入，并生成 `n` 张图片。处理过程需要在 console 和 log 中都有记录。后续新增可选 `request.md` 作为场景拆分补充指示，用于提供选景偏好、人物关系和故事背景。
 
 本轮遵循 `docs/workflows/codex-tdd-flow.md`：`Planner -> Test Writer -> Executor -> Verify -> Reviewer -> Fix Loop -> Documentation Sync`。当前 Planner 阶段只新增本计划文档，不修改测试和生产代码。用户确认本计划和 Verify 标准后，才进入测试编写阶段。
 
@@ -50,7 +50,7 @@
 
 ### 推荐方案
 
-采用方案 A：新增 `codex_novel.py` 负责小说读取、场景抽取、临时 Markdown、novel 总 trace 和任务级日志；对 `codex_pic.py` 做最小兼容改造，让 novel 可以指定图片输出目录和文件名前缀，同时保持 `codex pic` 默认行为不变。CLI 新增 `beartools codex novel <input_path> --n 4`，支持 `.txt` 和 `.md`，并透传 `--size`、`--quality`、`--output-format`。
+采用方案 A：新增 `codex_novel.py` 负责小说读取、可选 request 补充指示读取、场景抽取、临时 Markdown、novel 总 trace 和任务级日志；对 `codex_pic.py` 做最小兼容改造，让 novel 可以指定图片输出目录和文件名前缀，同时保持 `codex pic` 默认行为不变。CLI 新增 `beartools codex novel <input_path> --n 4`，支持 `.txt` 和 `.md`，并透传 `--request`、`--size`、`--quality`、`--output-format`。
 
 ## Grill Gate
 
@@ -64,6 +64,7 @@
 
 - 新增业务模块：`src/beartools/codex_novel.py`
   - 读取 txt/md，限制前 30000 字。
+  - 支持显式 `--request <request.md>`；未显式指定时，如果输入文件同目录存在 `request.md`，自动作为场景拆分补充指示读取。
   - 校验 `n`，默认 4，范围为 `1 <= n <= 12`。
   - 调用文本模型抽取场景和图片提示词。
   - 场景 JSON 解析失败时自动重试 1 次，第二次仍失败则写 trace 并退出 1。
@@ -98,7 +99,7 @@ Test Writer 阶段先写失败测试：
 1. CLI 注册与默认参数：
    - `beartools codex novel novel.txt` 调用 `run_codex_novel(input_path=..., n=4, size=None, quality=None, output_format=None)`。
    - `beartools codex novel novel.md` 同样进入 novel 流程。
-   - `--n 2 --size 1536x1024 --quality medium --output-format webp` 能正确透传。
+   - `--request request.md --n 2 --size 1536x1024 --quality medium --output-format webp` 能正确透传。
 2. 输入校验：
    - 文件不存在时报错。
    - 输入不是文件时报错。
@@ -106,6 +107,7 @@ Test Writer 阶段先写失败测试：
    - `n < 1` 或 `n > 12` 报错。
 3. 业务流程：
    - 读取内容超过 30000 字时，只传给场景抽取模型前 30000 字。
+   - 显式 `--request` 或输入文件同目录 `request.md` 会被合并到场景拆分模型输入中，但不写入 `scene_00x.md`。
    - 场景抽取返回不可解析 JSON 时自动重试 1 次；第二次仍失败时写入原始输出和错误，CLI 退出码为 1，且不进入图片生成。
    - 场景抽取返回少于 `n` 个有效提示词时，写 trace 后继续生成已有场景，最终 CLI 退出码为 1。
    - 正常场景会写 `output/novel/stem_<input_stem>/scene_001.md` 等 prompt 文件，scene Markdown 仅包含 `pic_prompt`，并调用图片生成能力 n 次。

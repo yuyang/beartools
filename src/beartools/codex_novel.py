@@ -27,6 +27,7 @@ NOVEL_OUTPUT_ROOT = Path("output") / "novel"
 NOVEL_SCENE_TEMPLATE_NAME = "codex_novel_scene_select"
 SCENE_SELECTION_RETRY_COUNT = 1
 DEFAULT_NOVEL_IMAGE_CONCURRENCY = 2
+NOVEL_REQUEST_FILE_NAME = "request.md"
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,31 @@ def _validate_input_path(input_path: Path) -> None:
         raise ValueError(f"小说路径不是文件: {input_path}")
     if input_path.suffix.lower() not in {".txt", ".md"}:
         raise ValueError(f"novel 输入必须是 txt 或 md 文件: {input_path}")
+
+
+def _validate_request_path(request_path: Path) -> None:
+    """校验场景拆分补充指示文件。"""
+
+    if not request_path.exists():
+        raise FileNotFoundError(f"request 文件不存在: {request_path}")
+    if not request_path.is_file():
+        raise ValueError(f"request 路径不是文件: {request_path}")
+    if request_path.suffix.lower() != ".md":
+        raise ValueError(f"request 文件必须是 md 文件: {request_path}")
+
+
+def _resolve_request_path(input_path: Path, request_path: Path | None) -> Path | None:
+    """解析可选 request.md 补充指示文件。"""
+
+    if request_path is not None:
+        _validate_request_path(request_path)
+        return request_path
+
+    candidate = input_path.parent / NOVEL_REQUEST_FILE_NAME
+    if not candidate.exists():
+        return None
+    _validate_request_path(candidate)
+    return candidate
 
 
 def _validate_scene_count(n: int) -> None:
@@ -258,6 +284,21 @@ async def _select_novel_scenes_async(
     return [_scene_to_payload(scene) for scene in scenes]
 
 
+def _build_scene_selection_input(source_text: str, request_text: str | None) -> str:
+    """构造场景拆分模型输入。"""
+
+    if request_text is None or not request_text.strip():
+        return source_text
+    return "\n\n".join(
+        [
+            "## 用户补充指示 request.md",
+            request_text.strip(),
+            "## 小说正文",
+            source_text,
+        ]
+    )
+
+
 async def _select_novel_scenes_with_retry_async(
     *,
     text: str,
@@ -388,6 +429,7 @@ async def _run_novel_scene_pic_async(
 async def run_codex_novel_async(
     *,
     input_path: Path,
+    request_path: Path | None = None,
     n: int = 4,
     size: str | None = None,
     quality: str | None = None,
@@ -396,6 +438,7 @@ async def run_codex_novel_async(
     """执行小说转图片任务。"""
 
     _validate_input_path(input_path)
+    resolved_request_path = _resolve_request_path(input_path, request_path)
     _validate_scene_count(n)
     started_at = time.monotonic()
     config = get_config().codex
@@ -406,19 +449,26 @@ async def run_codex_novel_async(
     summary_file = output_dir / "summary.md"
     trace_output_file = output_dir / "novel.trace.log"
     source_text = input_path.read_text(encoding="utf-8")[:MAX_NOVEL_INPUT_CHARS]
+    request_text = resolved_request_path.read_text(encoding="utf-8") if resolved_request_path is not None else None
+    scene_selection_input = _build_scene_selection_input(source_text, request_text)
     trace_payload: dict[str, object] = {
         "status": "started",
         "input_path": str(input_path),
+        "request_path": str(resolved_request_path) if resolved_request_path is not None else None,
         "requested_count": n,
         "input_chars": len(source_text),
+        "request_chars": len(request_text) if request_text is not None else 0,
         "output_dir": str(output_dir),
     }
     _write_novel_trace(trace_output_file, trace_payload)
     logger.info("开始小说转图片: input=%s n=%s output_dir=%s", input_path, n, output_dir)
+    if resolved_request_path is not None:
+        console.print(f"request 已读取: {resolved_request_path}", style="cyan")
+        logger.info("novel request 已读取: request=%s chars=%s", resolved_request_path, len(request_text or ""))
 
     try:
         raw_scenes = await _select_novel_scenes_with_retry_async(
-            text=source_text,
+            text=scene_selection_input,
             n=n,
             source_name=input_path.name,
             config=config,
@@ -499,6 +549,7 @@ async def run_codex_novel_async(
 def run_codex_novel(
     *,
     input_path: Path,
+    request_path: Path | None = None,
     n: int = 4,
     size: str | None = None,
     quality: str | None = None,
@@ -507,5 +558,12 @@ def run_codex_novel(
     """同步执行小说转图片任务。"""
 
     return asyncio.run(
-        run_codex_novel_async(input_path=input_path, n=n, size=size, quality=quality, output_format=output_format)
+        run_codex_novel_async(
+            input_path=input_path,
+            request_path=request_path,
+            n=n,
+            size=size,
+            quality=quality,
+            output_format=output_format,
+        )
     )

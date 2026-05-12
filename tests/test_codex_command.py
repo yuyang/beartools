@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -463,12 +464,14 @@ def test_codex_novel_passes_default_options_and_prints_summary(tmp_path: Path) -
     def fake_run_codex_novel(
         *,
         input_path: Path,
+        request_path: Path | None = None,
         n: int = 4,
         size: str | None = None,
         quality: str | None = None,
         output_format: str | None = None,
     ) -> CodexNovelResult:
         assert input_path == novel_file
+        assert request_path is None
         assert n == 4
         assert size is None
         assert quality is None
@@ -513,6 +516,8 @@ def test_codex_novel_passes_cli_options(tmp_path: Path) -> None:
     novel_file = tmp_path / "input" / "novel2.txt"
     novel_file.parent.mkdir(parents=True)
     novel_file.write_text("小说内容", encoding="utf-8")
+    request_file = tmp_path / "input" / "request.md"
+    request_file.write_text("偏好写实年代剧风格", encoding="utf-8")
     captured: dict[str, object] = {}
 
     from beartools.codex_novel import CodexNovelResult
@@ -520,12 +525,14 @@ def test_codex_novel_passes_cli_options(tmp_path: Path) -> None:
     def fake_run_codex_novel(
         *,
         input_path: Path,
+        request_path: Path | None = None,
         n: int = 4,
         size: str | None = None,
         quality: str | None = None,
         output_format: str | None = None,
     ) -> CodexNovelResult:
         captured["input_path"] = input_path
+        captured["request_path"] = request_path
         captured["n"] = n
         captured["size"] = size
         captured["quality"] = quality
@@ -547,6 +554,8 @@ def test_codex_novel_passes_cli_options(tmp_path: Path) -> None:
                 "codex",
                 "novel",
                 str(novel_file),
+                "--request",
+                str(request_file),
                 "--n",
                 "2",
                 "--size",
@@ -561,6 +570,7 @@ def test_codex_novel_passes_cli_options(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured == {
         "input_path": novel_file,
+        "request_path": request_file,
         "n": 2,
         "size": "1536x1024",
         "quality": "medium",
@@ -578,12 +588,13 @@ def test_codex_novel_exits_one_when_partial_failure(tmp_path: Path) -> None:
     def fake_run_codex_novel(
         *,
         input_path: Path,
+        request_path: Path | None = None,
         n: int = 4,
         size: str | None = None,
         quality: str | None = None,
         output_format: str | None = None,
     ) -> CodexNovelResult:
-        del input_path, n, size, quality, output_format
+        del input_path, request_path, n, size, quality, output_format
         output_dir = Path("output") / "novel" / "stem_novel1"
         return CodexNovelResult(
             output_dir=output_dir,
@@ -750,6 +761,88 @@ def test_run_codex_novel_writes_prompts_summary_and_uses_novel_output_dir(
     assert "scene_001.md" in summary_text
     assert "scene_001.trace.log" in summary_text
     assert "只写图片提示词一" in summary_text
+
+
+def test_run_codex_novel_reads_default_request_md_for_scene_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from beartools.codex_novel import run_codex_novel
+
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("INFO")
+    input_file = tmp_path / "input" / "novel.md"
+    input_file.parent.mkdir(parents=True)
+    input_file.write_text("第一章正文", encoding="utf-8")
+    request_file = input_file.parent / "request.md"
+    request_file.write_text("偏好写实历史风格；主角是兄妹关系。", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    async def fake_select_novel_scenes_async(
+        *, text: str, n: int, source_name: str, config: CodexConfig
+    ) -> list[dict[str, str]]:
+        del n, source_name, config
+        captured["text"] = text
+        return [
+            {
+                "title": "场景一",
+                "source_summary": "摘要一",
+                "visual_moment": "瞬间一",
+                "characters": "人物一",
+                "environment": "环境一",
+                "composition": "构图一",
+                "mood": "氛围一",
+                "pic_prompt": "包含 request 偏好的图片提示词",
+            }
+        ]
+
+    async def fake_run_codex_pic_async(
+        *,
+        md_path: Path,
+        size: str | None = None,
+        quality: str | None = None,
+        output_format: str | None = None,
+        output_dir: Path | None = None,
+        output_stem: str | None = None,
+    ) -> CodexPicResult:
+        del size, quality, output_format
+        assert output_dir is not None
+        assert output_stem == "scene_001"
+        image_file = output_dir / "scene_001.png"
+        trace_file = output_dir / "scene_001.trace.log"
+        image_file.write_bytes(b"image")
+        trace_file.write_text("trace", encoding="utf-8")
+        return CodexPicResult(output_dir=output_dir, image_output_file=image_file, trace_output_file=trace_file)
+
+    monkeypatch.setattr("beartools.codex_novel._select_novel_scenes_async", fake_select_novel_scenes_async)
+    monkeypatch.setattr("beartools.codex_novel.run_codex_pic_async", fake_run_codex_pic_async)
+    monkeypatch.setattr(
+        "beartools.codex_novel.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://example.com/v1",
+                api_key="token",
+                model="grok-3-mini",
+                pic_model="gpt-image-2",
+            )
+        ),
+    )
+
+    result = run_codex_novel(input_path=input_file, n=1)
+
+    assert "## 用户补充指示 request.md" in str(captured["text"])
+    assert "偏好写实历史风格；主角是兄妹关系。" in str(captured["text"])
+    assert "## 小说正文" in str(captured["text"])
+    assert "第一章正文" in str(captured["text"])
+    captured_output = capsys.readouterr().out
+    assert "request 已读取:" in captured_output
+    assert "request.md" in captured_output
+    assert "novel request 已读取" in caplog.text
+    trace_payload = json.loads(result.trace_output_file.read_text(encoding="utf-8"))
+    assert trace_payload["request_path"] == str(request_file)
+    assert trace_payload["request_chars"] == len("偏好写实历史风格；主角是兄妹关系。")
 
 
 def test_run_codex_novel_limits_image_generation_concurrency_to_two(

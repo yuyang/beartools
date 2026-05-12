@@ -130,6 +130,7 @@ def codex_picedit(
 
 def codex_novel(
     input_path: Path = typer.Argument(..., help="小说 txt/md 文件路径"),  # noqa: B008
+    request_path: Path | None = typer.Option(None, "--request", help="场景拆分补充指示 request.md 文件路径"),  # noqa: B008
     n: int = typer.Option(4, "--n", help="生成场景数量，范围 1-12"),  # noqa: B008
     size: str | None = typer.Option(None, help="图片尺寸，如 1024x1024"),  # noqa: B008
     quality: str | None = typer.Option(None, help="图片质量，如 high"),  # noqa: B008
@@ -140,6 +141,7 @@ def codex_novel(
     try:
         result = run_codex_novel(
             input_path=input_path,
+            request_path=request_path,
             n=n,
             size=size,
             quality=quality,
