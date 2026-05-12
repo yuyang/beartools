@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
+from pathlib import Path
 
 from rich.console import Console
 import typer
@@ -19,23 +21,41 @@ app = typer.Typer(help="思源笔记管理")
 _handler = SiyuanHandler()
 
 
+def _option_or_config(option_value: str, config_value: str) -> str:
+    """优先使用命令行参数，否则退回配置值。"""
+
+    return option_value if option_value else config_value
+
+
+def _print_siyuan_error(error: SiyuanError) -> None:
+    """统一展示思源错误和连接提示。"""
+
+    console.print(f"❌ {error}", style="red")
+    if "连接" in str(error):
+        console.print("请检查思源笔记是否已启动，且API服务已开启", style="yellow")
+
+
+def _run_siyuan_task[T](task: Coroutine[object, object, T]) -> T:
+    """同步执行思源异步任务，并统一转换命令退出。"""
+
+    try:
+        return asyncio.run(task)
+    except SiyuanError as e:
+        _print_siyuan_error(e)
+        raise typer.Exit(1) from e
+
+
 @app.command(name="ls-notebooks", help="列出所有笔记本")  # type: ignore
 def ls_notebooks() -> None:
     """列出所有思源笔记本，每行一个"""
-    try:
-        notebooks = asyncio.run(_handler.list_notebooks())
-    except SiyuanError as e:
-        console.print(f"❌ {e}", style="red")
-        if "连接" in str(e):
-            console.print("请检查思源笔记是否已启动，且API服务已开启", style="yellow")
-        raise typer.Exit(1) from e
+    notebooks = _run_siyuan_task(_handler.list_notebooks())
 
     for nb in notebooks:
         name = nb.get("name", "")
         id_ = nb.get("id", "")
         icon = nb.get("icon", "📓")
         closed = " 🔒" if nb.get("closed", False) else ""
-        console.print(f"{icon} {name}{closed} [{id_}]")
+        console.print(f"{icon} {name}{closed} [{id_}]", markup=False)
 
 
 @app.command(name="export-md", help="导出指定笔记为 Markdown 文本")  # type: ignore
@@ -45,24 +65,17 @@ def export_md(
 ) -> None:
     """导出指定笔记为 Markdown 文本，可输出到文件或控制台"""
     config = get_config()
-    target_note_id = noteid if noteid else config.siyuan.default_note
+    target_note_id = _option_or_config(noteid, config.siyuan.default_note)
 
-    try:
-        md_content = asyncio.run(_handler.export_md(target_note_id))
-    except SiyuanError as e:
-        console.print(f"❌ {e}", style="red")
-        if "连接" in str(e):
-            console.print("请检查思源笔记是否已启动，且API服务已开启", style="yellow")
-        raise typer.Exit(1) from e
+    md_content = _run_siyuan_task(_handler.export_md(target_note_id))
 
     if output:
         try:
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(md_content)
+            Path(output).write_text(md_content, encoding="utf-8")
             console.print(f"✅ 导出成功，已保存到: {output}", style="green")
-        except Exception as e:
+        except OSError as e:
             console.print(f"❌ 写入文件失败: {str(e)}", style="red")
-            raise typer.Exit(1) from None
+            raise typer.Exit(1) from e
     else:
         console.print(md_content)
 
@@ -75,8 +88,8 @@ def upload_md(
 ) -> None:
     """将本地 Markdown 文件上传到思源笔记，notebook 和 path 默认读取配置文件"""
     config = get_config()
-    target_notebook = notebook if notebook else config.siyuan.notebook
-    target_path = path if path else config.siyuan.path
+    target_notebook = _option_or_config(notebook, config.siyuan.notebook)
+    target_path = _option_or_config(path, config.siyuan.path)
 
     if not target_notebook:
         console.print("❌ 未指定笔记本 ID，请通过参数或配置文件 `siyuan.notebook` 设置", style="red")
@@ -85,12 +98,6 @@ def upload_md(
         console.print("❌ 未指定目标路径，请通过参数或配置文件 `siyuan.path` 设置", style="red")
         raise typer.Exit(1)
 
-    try:
-        doc_id = asyncio.run(_handler.upload_md(md_path, target_notebook, target_path))
-    except SiyuanError as e:
-        console.print(f"❌ {e}", style="red")
-        if "连接" in str(e):
-            console.print("请检查思源笔记是否已启动，且API服务已开启", style="yellow")
-        raise typer.Exit(1) from e
+    doc_id = _run_siyuan_task(_handler.upload_md(md_path, target_notebook, target_path))
 
     console.print(f"✅ 上传成功，文档 ID: {doc_id}", style="green")
