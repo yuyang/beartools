@@ -13,7 +13,6 @@ from beartools.llm.runtime import AgentTier
 from beartools.prompt.checker import PromptCheckResult, check_all_prompts
 from beartools.prompt.evaluator import PromptEvalReport, load_prompt_eval_cases, run_prompt_eval
 
-prompt_app = typer.Typer(help="Prompt 工具", add_completion=False)
 console = Console()
 
 
@@ -100,7 +99,3 @@ def eval_command(
     _print_eval_report(report)
     if report.failed_count:
         raise typer.Exit(1)
-
-
-prompt_app.command("check", help="静态检查 Prompt 资产")(check)
-prompt_app.command("eval", help="运行用户指定 YAML 中的 Prompt golden eval")(eval_command)

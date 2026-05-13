@@ -50,8 +50,8 @@ beartools = "beartools.cli:app"
 | --- | --- | --- | --- |
 | `beartools doctor` | `commands/doctor/command.py` | `commands/doctor/checks/*`、`llm/runtime.py` | 并发执行健康检查，默认检查网络、opencli，可选 LLM |
 | `beartools model check` | `commands/model/command.py` | `model_check.py`、`llm/runtime.py` | 对配置中的所有 LLM 模型执行选择题评测，输出正确率报告 |
-| `beartools prompt check` | `commands/prompt/command.py` | `prompt/checker.py`、`prompt/manager.py` | 静态检查 `prompts/*.md` 和已知动态 prompt 的输出契约 |
-| `beartools prompt eval` | `commands/prompt/command.py` | `prompt/evaluator.py`、`prompt/manager.py`、`llm/factory.py` | 读取用户显式指定 YAML，用 small/large tier 运行 Prompt golden eval |
+| `beartools check prompt` | `commands/check/command.py` | `commands/prompt/command.py`、`prompt/checker.py`、`prompt/manager.py` | 静态检查 `prompts/*.md` 和已知动态 prompt 的输出契约 |
+| `beartools check eval` | `commands/check/command.py` | `commands/prompt/command.py`、`prompt/evaluator.py`、`prompt/manager.py`、`llm/factory.py` | 读取用户显式指定 YAML，用 small/large tier 运行 Prompt golden eval |
 | `beartools clear` | `commands/clear/command.py` | 无独立业务模块 | 清理临时目录内容 |
 | `beartools siyuan` | `commands/siyuan/command.py` | `siyuan.py` | 列笔记本、导出 Markdown、上传 Markdown |
 | `beartools record` | `commands/record/command.py` | `record.py` | 查询 SQLite URL 记录 |
@@ -103,12 +103,12 @@ beartools = "beartools.cli:app"
 - `prompt/checker.py`
   - 收集 `prompts/*.md` 模板和已知动态 prompt，目前动态项包括 `model_check_question`、`gmail_summary`。
   - 静态检查输出格式、JSON 纯输出契约、小说分镜角色/风格锚点等规则。
-  - 默认 warning 不阻断；`prompt check --strict` 会把 warning 当失败。
+  - 默认 warning 不阻断；`check prompt --strict` 会把 warning 当失败。
 - `prompt/evaluator.py`
   - 读取用户显式指定的 eval YAML，格式为 `cases[].id`、`cases[].prompt`、`cases[].params`、`cases[].expect.json`。
   - 第一版只支持 `prompts/*.md` 模板，不支持代码内动态 prompt。
   - 模型输出必须是纯 JSON 对象，不自动剥离 Markdown 代码块或解释文字；`expect.json` 使用精确子集匹配。
-  - `prompt eval` 必须显式传 `--tier small|large`，并通过 `LLFactory().create(tier=...)` 创建模型。
+  - `check eval` 必须显式传 `--tier small|large`，并通过 `LLFactory().create(tier=...)` 创建模型。
 
 ### 账单模块
 
@@ -228,14 +228,16 @@ beartools doctor [--run-llm]
 ### Prompt 可靠性检查流程
 
 ```text
-beartools prompt check [--name <prompt>] [--strict]
+beartools check prompt [--name <prompt>] [--strict]
+  -> commands/check/command.py
   -> commands/prompt/command.py::check()
   -> prompt/checker.py::check_all_prompts()
        -> prompt/manager.py 收集 prompts/*.md
        -> 注册已知动态 prompt：model_check_question、gmail_summary
        -> 输出 pass/warning/error；strict 时 warning 也返回失败
 
-beartools prompt eval <yaml_path> --tier small|large
+beartools check eval <yaml_path> --tier small|large
+  -> commands/check/command.py
   -> commands/prompt/command.py::eval_command()
   -> prompt/evaluator.py::load_prompt_eval_cases()
        -> prompt/manager.py 校验 prompt 模板存在并渲染 params
