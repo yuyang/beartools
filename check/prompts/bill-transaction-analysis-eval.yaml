@@ -1,0 +1,36 @@
+cases:
+  - id: bill-transaction-food-tea
+    prompt: bill_transaction_analysis
+    params:
+      counterparty: "喜茶（国贸中心店）"
+      remark: "多肉葡萄少糖少冰"
+      status: "交易成功"
+      amount: "19.00"
+    expect:
+      json:
+        purpose: "外出吃饭"
+        owner: "vv"
+
+  - id: bill-transaction-child-clothes
+    prompt: bill_transaction_analysis
+    params:
+      counterparty: "孩子王"
+      remark: "儿童纯棉内裤 三条装"
+      status: "交易成功"
+      amount: "59.90"
+    expect:
+      json:
+        purpose: "衣服"
+        owner: "团团"
+
+  - id: bill-transaction-travel-flight
+    prompt: bill_transaction_analysis
+    params:
+      counterparty: "中国国际航空"
+      remark: "北京飞上海往返机票"
+      status: "交易成功"
+      amount: "1250.00"
+    expect:
+      json:
+        purpose: "出行"
+        owner: "all"

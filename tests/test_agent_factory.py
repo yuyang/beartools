@@ -281,6 +281,33 @@ class TestLLFactory:
 
         assert runtime.requested_tiers == ["small"]
 
+    def test_factory_accepts_explicit_large_tier(self) -> None:
+        node = create_runtime_node("large-default")
+        runtime = FakeRuntime(node)
+        async_openai = Mock(
+            name="AsyncOpenAI", return_value=SimpleNamespace(base_url=node.base_url, chat=SimpleNamespace())
+        )
+        openai_responses_model = Mock(name="OpenAIResponsesModel", return_value="responses-model")
+        openai_provider = Mock(name="OpenAIProvider", return_value="provider")
+        logger = Mock(name="logger")
+
+        with (
+            patch.object(factory_module, "get_llm_runtime", return_value=runtime),
+            patch.object(factory_module, "probe_runtime_node", return_value=None),
+            patch.object(
+                factory_module.importlib,
+                "import_module",
+                side_effect=create_import_module_side_effect(
+                    async_openai=async_openai,
+                    openai_responses_model=openai_responses_model,
+                    openai_provider=openai_provider,
+                ),
+            ),
+        ):
+            factory_module.LLFactory(logger=logger).create(tier="large")
+
+        assert runtime.requested_tiers == ["large"]
+
     def test_factory_reprobes_active_node_and_falls_back_when_probe_fails(self) -> None:
         primary = create_runtime_node("primary")
         backup = create_runtime_node("backup")

@@ -83,10 +83,10 @@ class LLFactory:
     provider: str = "openai"
     logger: _LoggerProtocol | None = None
 
-    def create(self, node: RuntimeNode | None = None) -> Model[object]:
+    def create(self, node: RuntimeNode | None = None, tier: AgentTier = "small") -> Model[object]:
         """创建并返回当前活动节点对应的 PydanticAI 模型。"""
 
-        runtime_node = node or self._select_valid_node(get_llm_runtime(), tier="small")
+        runtime_node = node or self._select_valid_node(get_llm_runtime(), tier=tier)
         if node is not None:
             probe_runtime_node(node)
         active_logger = self.logger or _get_logger()

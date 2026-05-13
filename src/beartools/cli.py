@@ -18,6 +18,7 @@ from beartools.commands.gmail import gmail_app
 from beartools.commands.markdown import markdown_app
 from beartools.commands.model import model_app
 from beartools.commands.newsnow import newsnow_app
+from beartools.commands.prompt import prompt_app
 from beartools.commands.record import record_app
 from beartools.commands.siyuan import siyuan_app
 from beartools.logger import shutdown_logging
@@ -67,6 +68,9 @@ app.add_typer(markdown_app, name="markdown", help="Markdown 文件处理")
 
 # 注册model作为子命令
 app.add_typer(model_app, name="model", help="模型工具")
+
+# 注册prompt作为子命令
+app.add_typer(prompt_app, name="prompt", help="Prompt 工具")
 
 # 注册bill作为子命令
 app.add_typer(bill_app, name="bill", help="账单处理，直接输入文件路径时默认执行完整流程")
