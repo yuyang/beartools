@@ -284,6 +284,10 @@ def _build_summary_prompt(messages: list[GmailMessageSummaryInput], fetched_days
         "最重要的 10 封邮件中，请自行判断重要性；如果总邮件数不足 10，则按实际数量输出。",
         "每封邮件请说明主题、发件人、时间、简要摘要和为什么重要。",
         "总体概览请总结本批邮件的主要主题、待处理事项和风险点。",
+        "排版要求：",
+        "1. 只输出摘要结果，不要补充无关寒暄。",
+        "2. 使用 Markdown 一级标题 `# 最重要的 10 封邮件` 和 `# 总体概览`。",
+        "3. 在“最重要的 10 封邮件”部分中，每封邮件使用编号小节，包含主题、发件人、时间、摘要、重要性说明。",
         "",
     ]
     for index, message in enumerate(messages, start=1):

@@ -17,7 +17,10 @@ class PromptManager:
 
     Usage:
         manager = PromptManager(prompt_dir="prompts")
-        result = manager.render("code_review", {"file_path": "main.py", "code": "..."})
+        result = manager.render(
+            "bill_transaction_analysis",
+            {"counterparty": "便利店", "remark": "早餐", "status": "交易成功", "amount": "12.00"},
+        )
     """
 
     def __init__(self, prompt_dir: str | Path | None = None) -> None:

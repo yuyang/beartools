@@ -42,6 +42,21 @@ def test_check_project_json_prompt_contract_passes() -> None:
     assert result.status != "error"
 
 
+def test_warning_prompts_have_explicit_output_contract() -> None:
+    prompt_names = {
+        "bill_part_refund_amount",
+        "gmail_summary",
+    }
+
+    assets = [item for item in collect_prompt_assets() if item.name in prompt_names]
+
+    assert {asset.name for asset in assets} == prompt_names
+    for asset in assets:
+        result = check_prompt_asset(asset)
+        checked_rules = {issue.rule for issue in result.issues}
+        assert "output_contract" not in checked_rules
+
+
 def test_check_novel_scene_prompt_requires_consistency_anchors() -> None:
     asset = next(item for item in collect_prompt_assets() if item.name == "codex_novel_scene_select")
 
