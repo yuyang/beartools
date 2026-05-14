@@ -746,8 +746,15 @@ def test_run_codex_novel_writes_prompts_summary_and_uses_novel_output_dir(
     assert captured["source_name"] == "long.md"
     assert captured["model"] == "grok-3-mini"
     captured_output = capsys.readouterr().out
+    assert "novel 开始:" in captured_output
+    assert "目标场景数: 2" in captured_output
+    assert "小说已读取:" in captured_output
+    assert "开始抽取场景: 2 个..." in captured_output
+    assert "场景抽取完成: 2/2" in captured_output
     assert "scene_001 pic_prompt: 只写图片提示词一" in captured_output
     assert "scene_002 pic_prompt: 只写图片提示词二" in captured_output
+    assert "开始生成图片: 2 个场景，并发 2" in captured_output
+    assert "novel 完成: 成功 2，失败 0" in captured_output
     assert "scene_001 pic_prompt=只写图片提示词一" in caplog.text
     assert "scene_002 pic_prompt=只写图片提示词二" in caplog.text
     assert result.output_dir == Path("output") / "novel" / "stem_long"

@@ -448,8 +448,11 @@ async def run_codex_novel_async(
     _cleanup_managed_outputs(output_dir)
     summary_file = output_dir / "summary.md"
     trace_output_file = output_dir / "novel.trace.log"
+    console.print(f"novel 开始: {input_path}，目标场景数: {n}", style="cyan")
+    console.print(f"结果目录: {output_dir}", style="cyan")
     source_text = input_path.read_text(encoding="utf-8")[:MAX_NOVEL_INPUT_CHARS]
     request_text = resolved_request_path.read_text(encoding="utf-8") if resolved_request_path is not None else None
+    console.print(f"小说已读取: {input_path}（{len(source_text)} 字）", style="cyan")
     scene_selection_input = _build_scene_selection_input(source_text, request_text)
     trace_payload: dict[str, object] = {
         "status": "started",
@@ -467,6 +470,7 @@ async def run_codex_novel_async(
         logger.info("novel request 已读取: request=%s chars=%s", resolved_request_path, len(request_text or ""))
 
     try:
+        console.print(f"开始抽取场景: {n} 个...", style="cyan")
         raw_scenes = await _select_novel_scenes_with_retry_async(
             text=scene_selection_input,
             n=n,
@@ -491,6 +495,9 @@ async def run_codex_novel_async(
         trace_payload["scene_select_truncated"] = True
     trace_payload["scenes"] = [_scene_to_payload(scene) for scene in scenes]
     _write_novel_trace(trace_output_file, trace_payload)
+    console.print(f"场景抽取完成: {len(scenes)}/{n}", style="cyan")
+    if len(scenes) < n:
+        console.print(f"只抽取到 {len(scenes)}/{n} 个场景，将继续生成已有场景", style="yellow")
 
     scene_prompt_files: list[Path] = []
     for scene_index, scene in enumerate(scenes, start=1):
@@ -502,6 +509,10 @@ async def run_codex_novel_async(
         logger.info("scene_%03d pic_prompt=%s", scene_index, scene.pic_prompt)
 
     semaphore = asyncio.Semaphore(DEFAULT_NOVEL_IMAGE_CONCURRENCY)
+    console.print(
+        f"开始生成图片: {len(scenes)} 个场景，并发 {DEFAULT_NOVEL_IMAGE_CONCURRENCY}",
+        style="cyan",
+    )
     results = await asyncio.gather(
         *[
             _run_novel_scene_pic_async(
@@ -517,6 +528,7 @@ async def run_codex_novel_async(
             for scene_index, scene in enumerate(scenes, start=1)
         ]
     )
+    console.print("图片生成完成，正在写入 summary 和 trace...", style="cyan")
     trace_payload["results"] = [_result_to_payload(item) for item in results]
     _write_novel_trace(trace_output_file, trace_payload)
 
@@ -543,6 +555,7 @@ async def run_codex_novel_async(
         novel_result.failure_count,
         output_dir,
     )
+    console.print(f"novel 完成: 成功 {novel_result.success_count}，失败 {novel_result.failure_count}", style="green")
     return novel_result
 
 
