@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
@@ -22,6 +23,7 @@ from beartools.llm.factory import LLFactory
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"]
 EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+ProgressCallback = Callable[[str], None]
 
 
 class SummaryAgentProtocol(Protocol):
@@ -280,14 +282,17 @@ def _build_summary_prompt(messages: list[GmailMessageSummaryInput], fetched_days
 
     lines = [
         f"请总结最近 {fetched_days} 天内抓取到的 Gmail INBOX 邮件。",
-        "输出必须包含两个一级部分：最重要的 10 封邮件、总体概览。",
-        "最重要的 10 封邮件中，请自行判断重要性；如果总邮件数不足 10，则按实际数量输出。",
-        "每封邮件请说明主题、发件人、时间、简要摘要和为什么重要。",
+        "输出必须包含两个一级部分：最重要的 10 个邮件事件、总体概览。",
+        "最重要的 10 个邮件事件中，请自行判断重要性；如果重要事件不足 10 个，则按实际数量输出。",
+        "邮件事件可以是一封邮件，也可以是一组高度相关邮件。不要机械逐封列出同类邮件。",
+        "遇到证券成交、订单退款、系统告警、登录通知等可聚合邮件时，必须按发送方、主题簇、标的、订单或账号事件汇总。",
+        "证券交易类邮件要优先汇总同一标的、同一买卖方向或连续成交链路，写清总数量、价格区间或主要成交价、时间范围、相关邮件数和需要核对的风险。",
+        "每个事件请说明主题/事件名、相关发件人、时间范围、简要摘要和为什么重要。",
         "总体概览请总结本批邮件的主要主题、待处理事项和风险点。",
         "排版要求：",
         "1. 只输出摘要结果，不要补充无关寒暄。",
-        "2. 使用 Markdown 一级标题 `# 最重要的 10 封邮件` 和 `# 总体概览`。",
-        "3. 在“最重要的 10 封邮件”部分中，每封邮件使用编号小节，包含主题、发件人、时间、摘要、重要性说明。",
+        "2. 使用 Markdown 一级标题 `# 最重要的 10 个邮件事件` 和 `# 总体概览`。",
+        "3. 在“最重要的 10 个邮件事件”部分中，每个事件使用编号小节，包含事件名、相关发件人、时间范围、摘要、重要性说明。",
         "",
     ]
     for index, message in enumerate(messages, start=1):
@@ -318,12 +323,21 @@ def summarize_messages(
     return str(result.output)
 
 
-def fetch_gmail_summary(days: int, max_results: int) -> GmailFetchResult:
+def fetch_gmail_summary(
+    days: int,
+    max_results: int,
+    progress_callback: ProgressCallback | None = None,
+) -> GmailFetchResult:
     """抓取 Gmail 摘要，后续由真实流程实现。"""
 
     gmail_config = get_config().gmail
     fetched_at = datetime.now()
-    raw_messages = list_inbox_messages(days, gmail_config, max_results=max_results)
+    raw_messages = list_inbox_messages(
+        days,
+        gmail_config,
+        max_results=max_results,
+    )
+    _emit_progress(progress_callback, f"邮件拉取完成，命中 {len(raw_messages)} 封，开始分析")
     summary_inputs = [message_detail_to_summary_input(item) for item in raw_messages]
     limited_messages, truncated = limit_messages(summary_inputs, max_results=max_results)
     summary_text = summarize_messages(limited_messages, fetched_days=days)
@@ -405,6 +419,13 @@ def build_gmail_service(gmail_config: GmailConfig) -> GmailServiceProtocol:
     return service
 
 
+def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
+    """向调用方报告进度。"""
+
+    if progress_callback is not None:
+        progress_callback(message)
+
+
 def _get_header_value(headers: list[object], name: str) -> str:
     """从邮件头提取指定值。"""
 
@@ -438,7 +459,11 @@ def message_detail_to_summary_input(message_detail: dict[str, object]) -> GmailM
     )
 
 
-def list_inbox_messages(days: int, gmail_config: GmailConfig, max_results: int) -> list[dict[str, object]]:
+def list_inbox_messages(
+    days: int,
+    gmail_config: GmailConfig,
+    max_results: int,
+) -> list[dict[str, object]]:
     """查询指定天数内的 INBOX 邮件详情。"""
 
     service = build_gmail_service(gmail_config)

@@ -14,6 +14,12 @@ console = Console()
 logger = get_logger(__name__)
 
 
+def _print_fetch_progress(message: str) -> None:
+    """打印 Gmail 抓取进度。"""
+
+    console.print(f"[cyan]{message}[/cyan]")
+
+
 def fetch(
     days: int | None = typer.Option(None, "--days", min=1, help="抓取最近多少天的 INBOX 邮件，默认使用配置值"),
     max_results: int | None = typer.Option(None, "--max-results", min=1, help="最多处理多少封邮件，默认使用配置值"),
@@ -24,7 +30,11 @@ def fetch(
     resolved_days = days or config.default_days
     resolved_max_results = max_results or config.max_results
     try:
-        result = fetch_gmail_summary(days=resolved_days, max_results=resolved_max_results)
+        result = fetch_gmail_summary(
+            days=resolved_days,
+            max_results=resolved_max_results,
+            progress_callback=_print_fetch_progress,
+        )
     except TimeoutError as exc:
         logger.exception("Gmail 抓取超时: days=%s max_results=%s", resolved_days, resolved_max_results)
         console.print("Gmail 抓取超时，请稍后重试", style="red")

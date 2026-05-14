@@ -243,11 +243,13 @@ def test_write_summary_markdown_uses_dynamic_max_results_notice(tmp_path: Path) 
 
 class FakeAgent:
     def run_sync(self, prompt: str) -> object:
-        assert "最重要的 10 封邮件" in prompt
+        assert "最重要的 10 个邮件事件" in prompt
+        assert "不要机械逐封列出同类邮件" in prompt
+        assert "证券交易类邮件要优先汇总" in prompt
         assert "总体概览" in prompt
 
         class Result:
-            output = "## 最重要的 10 封邮件\n\n1. 邮件A\n\n## 总体概览\n\n整体稳定"
+            output = "## 最重要的 10 个邮件事件\n\n1. 邮件A\n\n## 总体概览\n\n整体稳定"
 
         return Result()
 
@@ -267,8 +269,36 @@ def test_summarize_messages_returns_model_output() -> None:
 
     summary = summarize_messages(messages, fetched_days=3, agent=FakeAgent())
 
-    assert "最重要的 10 封邮件" in summary
+    assert "最重要的 10 个邮件事件" in summary
     assert "总体概览" in summary
+
+
+def test_summary_prompt_requires_grouping_related_trade_emails() -> None:
+    from beartools.gmail import GmailMessageSummaryInput, _build_summary_prompt
+
+    messages = [
+        GmailMessageSummaryInput(
+            message_id="1",
+            subject="卖出成交 2倍做多MU ETF-Direxion MUU",
+            sender='"华盛证券" <service@mail.valuable.com.hk>',
+            received_at="Thu, 14 May 2026 14:06:52 +0800",
+            body_text="成交数量 16 股，成交价格 615.00",
+        ),
+        GmailMessageSummaryInput(
+            message_id="2",
+            subject="卖出成交 2倍做多MU ETF-Direxion MUU",
+            sender='"华盛证券" <service@mail.valuable.com.hk>',
+            received_at="Thu, 14 May 2026 14:06:55 +0800",
+            body_text="成交数量 23 股，成交价格 615.00",
+        ),
+    ]
+
+    prompt = _build_summary_prompt(messages, fetched_days=3)
+
+    assert "邮件事件可以是一封邮件，也可以是一组高度相关邮件" in prompt
+    assert "不要机械逐封列出同类邮件" in prompt
+    assert "证券交易类邮件要优先汇总同一标的、同一买卖方向或连续成交链路" in prompt
+    assert "总数量、价格区间或主要成交价、时间范围、相关邮件数" in prompt
 
 
 def test_gmail_fetch_command_prints_counts_and_output_path() -> None:
@@ -280,7 +310,7 @@ def test_gmail_fetch_command_prints_counts_and_output_path() -> None:
         processed_count=100,
         truncated=True,
         max_results=100,
-        summary_text="## 最重要的 10 封邮件\n\n## 总体概览",
+        summary_text="## 最重要的 10 个邮件事件\n\n## 总体概览",
         output_file=Path("email/2026-05-01_10-30-00.md"),
     )
 
@@ -304,7 +334,7 @@ def test_gmail_fetch_command_uses_dynamic_max_results_notice() -> None:
         processed_count=20,
         truncated=True,
         max_results=20,
-        summary_text="## 最重要的 10 封邮件\n\n## 总体概览",
+        summary_text="## 最重要的 10 个邮件事件\n\n## 总体概览",
         output_file=Path("email/2026-05-01_10-30-00.md"),
     )
 
@@ -313,6 +343,30 @@ def test_gmail_fetch_command_uses_dynamic_max_results_notice() -> None:
 
     assert result.exit_code == 0
     assert "超过处理上限，仅处理前 20 封" in result.stdout
+
+
+def test_gmail_fetch_command_prints_progress_messages() -> None:
+    from beartools.gmail import GmailFetchResult
+
+    def fake_fetch_gmail_summary(days: int, max_results: int, progress_callback: object) -> GmailFetchResult:
+        del days, max_results
+        assert callable(progress_callback)
+        progress_callback("邮件拉取完成，命中 100 封，开始分析")
+        return GmailFetchResult(
+            fetched_days=3,
+            total_count=1,
+            processed_count=1,
+            truncated=False,
+            max_results=100,
+            summary_text="## 最重要的 10 个邮件事件\n\n## 总体概览",
+            output_file=Path("email/2026-05-01_10-30-00.md"),
+        )
+
+    with patch("beartools.commands.gmail.command.fetch_gmail_summary", side_effect=fake_fetch_gmail_summary):
+        result = runner.invoke(app, ["gmail", "fetch"])
+
+    assert result.exit_code == 0
+    assert "邮件拉取完成，命中 100 封，开始分析" in result.stdout
 
 
 def test_gmail_fetch_command_logs_timeout_and_prints_brief_message() -> None:
@@ -519,13 +573,34 @@ def test_fetch_gmail_summary_limits_messages_and_writes_output(tmp_path: Path) -
 
     with patch("beartools.gmail.get_config", return_value=ConfigStub(gmail_config)):
         with patch("beartools.gmail.list_inbox_messages", return_value=fake_messages):
-            with patch("beartools.gmail.summarize_messages", return_value="## 最重要的 10 封邮件\n\n## 总体概览"):
+            with patch("beartools.gmail.summarize_messages", return_value="## 最重要的 10 个邮件事件\n\n## 总体概览"):
                 result = fetch_gmail_summary(days=3, max_results=100)
 
     assert result.total_count == 101
     assert result.processed_count == 100
     assert result.truncated is True
     assert result.output_file.exists()
+
+
+def test_fetch_gmail_summary_reports_business_progress(tmp_path: Path) -> None:
+    from beartools.config import GmailConfig
+    from beartools.gmail import fetch_gmail_summary
+
+    gmail_config = GmailConfig(
+        client_secret_file=Path("config/client_secret.json"),
+        token_file=Path("config/gmail.token.json"),
+        output_dir=tmp_path,
+        default_days=3,
+        max_results=100,
+    )
+    progress_messages: list[str] = []
+
+    with patch("beartools.gmail.get_config", return_value=ConfigStub(gmail_config)):
+        with patch("beartools.gmail.list_inbox_messages", return_value=[_build_fake_message(1)]):
+            with patch("beartools.gmail.summarize_messages", return_value="## 最重要的 10 个邮件事件\n\n## 总体概览"):
+                fetch_gmail_summary(days=3, max_results=100, progress_callback=progress_messages.append)
+
+    assert progress_messages == ["邮件拉取完成，命中 1 封，开始分析"]
 
 
 def test_list_inbox_messages_reads_multiple_pages_until_max_results() -> None:
