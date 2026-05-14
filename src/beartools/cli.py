@@ -11,7 +11,7 @@ from io import StringIO
 import shlex
 import sys
 import time
-from typing import Protocol, cast
+from typing import Protocol, TextIO, cast
 
 import click
 import typer
@@ -38,6 +38,30 @@ from beartools.memory.service import append_command_memory, create_command_summa
 class _ClickGroupProtocol(Protocol):
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         """获取子命令。"""
+
+
+class _TeeTextCapture:
+    """同步写入原始流，并保留一份文本用于命令记忆。"""
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+        self._buffer = StringIO()
+
+    def write(self, text: str) -> int:
+        """写入终端并复制到内存缓冲。"""
+
+        self._buffer.write(text)
+        return self._stream.write(text)
+
+    def flush(self) -> None:
+        """刷新原始输出流。"""
+
+        self._stream.flush()
+
+    def getvalue(self) -> str:
+        """返回已捕获的文本。"""
+
+        return self._buffer.getvalue()
 
 
 # 创建主应用
@@ -131,13 +155,13 @@ def _main_wrapper() -> None:
 
     started_at = _resolve_memory_now()
     started_monotonic = time.monotonic()
-    stdout_buffer = StringIO()
-    stderr_buffer = StringIO()
+    stdout_capture = _TeeTextCapture(sys.stdout)
+    stderr_capture = _TeeTextCapture(sys.stderr)
     exit_code = 0
 
     sys.argv = argv
     try:
-        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             app(args=argv[1:], prog_name="beartools", standalone_mode=False)
     except click.exceptions.Exit as exc:
         exit_code = int(exc.exit_code)
@@ -146,10 +170,8 @@ def _main_wrapper() -> None:
     finally:
         sys.argv = original_argv
 
-    stdout_text = stdout_buffer.getvalue()
-    stderr_text = stderr_buffer.getvalue()
-    sys.stdout.write(stdout_text)
-    sys.stderr.write(stderr_text)
+    stdout_text = stdout_capture.getvalue()
+    stderr_text = stderr_capture.getvalue()
     sys.stdout.flush()
     sys.stderr.flush()
 

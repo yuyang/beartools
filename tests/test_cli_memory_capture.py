@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from io import StringIO
 import os
 from pathlib import Path
 import subprocess
@@ -11,6 +12,17 @@ def test_console_entrypoint_points_to_wrapper() -> None:
     pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
 
     assert 'beartools = "beartools.cli:_main_wrapper"' in pyproject_text
+
+
+def test_tee_text_capture_writes_through_and_keeps_copy() -> None:
+    from beartools.cli import _TeeTextCapture
+
+    stream = StringIO()
+    capture = _TeeTextCapture(stream)
+
+    capture.write("开始\n")
+    assert stream.getvalue() == "开始\n"
+    assert capture.getvalue() == "开始\n"
 
 
 def test_wrapper_records_doctor_console_output_to_day_memory(tmp_path: Path) -> None:
