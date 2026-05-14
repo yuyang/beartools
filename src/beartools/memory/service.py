@@ -17,6 +17,7 @@ from beartools.memory.models import CommandMemoryInput, CommandSummarizer, Daily
 from beartools.memory.prompts import build_command_memory_prompt, build_daily_summary_prompt
 
 MAX_CAPTURE_CHARS = 4000
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
 
 
 class _RunResultProtocol(Protocol):
@@ -42,6 +43,12 @@ def truncate_text(text: str, limit: int = MAX_CAPTURE_CHARS) -> str:
     return f"{text[:limit]}\n...[已截断 {len(text) - limit} 字符]"
 
 
+def sanitize_console_text(text: str) -> str:
+    """清理终端控制字符，保留适合写入 Markdown 的可读输出。"""
+
+    return ANSI_ESCAPE_PATTERN.sub("", text)
+
+
 def append_command_memory(
     *,
     memory_root: Path,
@@ -52,8 +59,8 @@ def append_command_memory(
 
     safe_input = replace(
         memory_input,
-        stdout=truncate_text(memory_input.stdout),
-        stderr=truncate_text(memory_input.stderr),
+        stdout=truncate_text(sanitize_console_text(memory_input.stdout)),
+        stderr=truncate_text(sanitize_console_text(memory_input.stderr)),
         help_text=truncate_text(memory_input.help_text, limit=1000),
     )
     day_path = memory_root / "day" / f"{safe_input.started_at.date().isoformat()}.md"

@@ -11,6 +11,7 @@ from beartools.memory.service import (
     append_command_memory,
     append_missing_daily_summaries,
     generate_daily_summary,
+    sanitize_console_text,
 )
 from beartools.prompt import PromptManager
 
@@ -66,6 +67,32 @@ def test_append_command_memory_creates_day_file_and_uses_small_summary(tmp_path:
     assert "- 退出码：0" in text
     assert "- help：运行环境健康检查" in text
     assert summarizer.calls[0].stdout == "doctor ok"
+
+
+def test_append_command_memory_strips_ansi_escape_from_console_output(tmp_path: Path) -> None:
+    summarizer = _FakeCommandSummarizer()
+    memory_input = CommandMemoryInput(
+        command="beartools prompt check",
+        help_text="检查 prompt",
+        stdout="\x1b[3mPrompt Check\x1b[0m\n\x1b[32mpass\x1b[0m\n",
+        stderr="\x1b[31mwarning\x1b[0m\n",
+        exit_code=0,
+        started_at=datetime(2026, 5, 13, 9, 30, 0),
+        duration_seconds=1.25,
+    )
+
+    output_path = append_command_memory(memory_root=tmp_path, memory_input=memory_input, summarizer=summarizer)
+
+    text = output_path.read_text(encoding="utf-8")
+    assert "\x1b" not in text
+    assert "Prompt Check" in text
+    assert "pass" in text
+    assert summarizer.calls[0].stdout == "Prompt Check\npass\n"
+    assert summarizer.calls[0].stderr == "warning\n"
+
+
+def test_sanitize_console_text_strips_common_escape_sequences() -> None:
+    assert sanitize_console_text("a\x1b[32mz\x1b[0m\x1b]0;title\x07b") == "azb"
 
 
 def test_append_command_memory_appends_without_overwriting(tmp_path: Path) -> None:
