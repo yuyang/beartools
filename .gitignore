@@ -217,6 +217,7 @@ config/gmail.token.json
 log/
 .worktrees/
 email/
+/memory/
 
 data/
 

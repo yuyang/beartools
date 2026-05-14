@@ -4,7 +4,7 @@
 
 ## 1. 项目定位
 
-`beartools` 是一个 Python 3.13+ 的个人工具集合，使用 `uv` 管理依赖，通过 Typer 暴露 `beartools` 命令行入口。当前主要能力包括账单归一化与分析、Prompt 可靠性检查、网页内容抓取、思源笔记操作、Markdown 图片内嵌、Codex Markdown/图片任务、Gmail 摘要、NewsNow 抓取、记录管理和环境健康检查。
+`beartools` 是一个 Python 3.13+ 的个人工具集合，使用 `uv` 管理依赖，通过 Typer 暴露 `beartools` 命令行入口。当前主要能力包括账单归一化与分析、Prompt 可靠性检查、网页内容抓取、思源笔记操作、Markdown 图片内嵌、Codex Markdown/图片任务、Gmail 摘要、NewsNow 抓取、记录管理、环境健康检查和 CLI 记忆日记。
 
 ## 2. 顶层目录
 
@@ -15,6 +15,7 @@
 │   ├── commands/               # 命令行适配层
 │   ├── bill/                   # 账单归一化、分析和状态映射
 │   ├── llm/                    # LLM 节点运行时与模型工厂
+│   ├── memory/                 # CLI 命令记忆与日总结
 │   ├── prompt/                 # Prompt 模板加载和渲染
 │   ├── config.py               # 配置加载与校验
 │   ├── logger.py               # 日志初始化与重载
@@ -41,10 +42,10 @@
 入口脚本在 `pyproject.toml` 中声明：
 
 ```text
-beartools = "beartools.cli:app"
+beartools = "beartools.cli:_main_wrapper"
 ```
 
-`src/beartools/cli.py` 负责注册所有命令：
+`src/beartools/cli.py` 负责注册所有命令，并通过 `_main_wrapper()` 捕获 beartools 命令的 argv、console 输出、退出码和当前命令 help，追加写入 `memory/day/YYYY-MM-DD.md`。单次命令记忆失败不改变原命令退出码。
 
 | 命令 | 命令模块 | 业务模块 | 说明 |
 | --- | --- | --- | --- |
@@ -61,8 +62,12 @@ beartools = "beartools.cli:app"
 | `beartools gmail` | `commands/gmail/command.py` | `gmail.py` | 拉取 Gmail 收件箱并生成摘要；发送纯文本邮件 |
 | `beartools newsnow` | `commands/newsnow/command.py` | `newsnow.py` | 通过本地浏览器抓取 NewsNow 可见卡片 |
 | `beartools codex` | `commands/codex/command.py` | `codex.py`、`codex_pic.py` | 执行 Codex Markdown、图片生成、图片编辑、批量图片任务 |
+| `beartools diary summary` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 使用 large 模型把某天 `memory/day/YYYY-MM-DD.md` 总结为 `memory/summary/YYYY-MM-DD.md` |
+| `beartools diary append` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 默认补齐本月 1 号到昨天已有 day 但缺失的 summary，默认不覆盖已有 summary |
 
 `cli._main_wrapper()` 对 `beartools bill <input> <from>` 做了特殊处理：当 `bill` 后第一个参数不是已知子命令时，自动插入 `run`，所以 `beartools bill file.xlsx 2601-` 等价于 `beartools bill run file.xlsx 2601-`。
+
+`cli._main_wrapper()` 也是 CLI 记忆系统入口：命令完成后用 small 模型根据 beartools 命令、CLI/console 显示信息和 help 生成单次记忆，写入 `memory/day/YYYY-MM-DD.md`。`diary` 命令自身也会进入 day 记忆。测试和冒烟验证可通过 `BEARTOOLS_MEMORY_ROOT` 指向临时目录。
 
 ## 4. 核心模块职责
 
@@ -109,6 +114,18 @@ beartools = "beartools.cli:app"
   - 第一版只支持 `prompts/*.md` 模板，不支持代码内动态 prompt。
   - 模型输出必须是纯 JSON 对象，不自动剥离 Markdown 代码块或解释文字；`expect.json` 使用精确子集匹配。
   - `check eval` 必须显式传 `--tier small|large`，并通过 `LLFactory().create(tier=...)` 创建模型。
+
+### CLI 记忆
+
+- `memory/models.py`
+  - 定义单次命令记忆输入、命令摘要器和日总结摘要器协议。
+- `memory/prompts.py`
+  - 只负责通过 `PromptManager` 渲染 `prompts/cli_command_memory.md` 和 `prompts/cli_daily_summary.md`，不硬编码完整 prompt 正文。
+- `memory/service.py`
+  - 计算 `memory/day/YYYY-MM-DD.md` 和 `memory/summary/YYYY-MM-DD.md` 路径。
+  - 单次命令记忆追加写入 day 文件，保留模型摘要、退出码、help 摘要以及截断后的 console stdout/stderr。
+  - 单次命令记忆使用 small 模型；`diary summary` 和 `diary append` 使用 large 模型。
+  - `diary append` 只补齐缺失 summary，不覆盖已有 summary。
 
 ### 账单模块
 

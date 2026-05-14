@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-beartools = "beartools.cli:app"
+beartools = "beartools.cli:_main_wrapper"
 
 [tool.uv]
 package = true
