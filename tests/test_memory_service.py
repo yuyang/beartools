@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from beartools.memory.models import CommandMemoryInput
 from beartools.memory.prompts import build_command_memory_prompt, build_daily_summary_prompt
+import beartools.memory.service as memory_service
 from beartools.memory.service import (
     append_command_memory,
     append_missing_daily_summaries,
@@ -37,6 +39,41 @@ class _FakeDailySummarizer:
     def summarize_day(self, day_content: str) -> str:
         self.calls.append(day_content)
         return "- 今天主要在做：验证记忆系统\n- 关键结果：summary 已生成\n- 未完成/后续：继续测试"
+
+
+class _CloseableModelBundle:
+    def __init__(self, close_calls: list[str]) -> None:
+        self.model = "fake-model"
+        self._close_calls = close_calls
+
+    def close(self) -> None:
+        self._close_calls.append("closed")
+
+    async def aclose(self) -> None:
+        self._close_calls.append("closed")
+
+
+class _FakeLLFactory:
+    requested_tiers: list[str] = []
+    close_calls: list[str] = []
+
+    def create_bundle(self, *, tier: str) -> _CloseableModelBundle:
+        self.requested_tiers.append(tier)
+        return _CloseableModelBundle(self.close_calls)
+
+
+class _FakeMemoryAgent:
+    created_models: list[object] = []
+    prompt_inputs: list[str] = []
+    output = "命令总结"
+
+    def __init__(self, *, model: object, output_type: type[str]) -> None:
+        del output_type
+        self.created_models.append(model)
+
+    async def run(self, prompt: str) -> SimpleNamespace:
+        self.prompt_inputs.append(prompt)
+        return SimpleNamespace(output=self.output)
 
 
 def _build_memory_input() -> CommandMemoryInput:
@@ -197,3 +234,41 @@ def test_memory_prompts_are_managed_in_prompt_directory() -> None:
     assert "CLI/console 输出" in command_prompt
     assert "## 09:00:00 beartools doctor" in daily_prompt
     assert "今天主要在做" in daily_prompt
+
+
+def test_llm_command_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeLLFactory.requested_tiers = []
+    _FakeLLFactory.close_calls = []
+    _FakeMemoryAgent.created_models = []
+    _FakeMemoryAgent.prompt_inputs = []
+    _FakeMemoryAgent.output = "命令总结"
+
+    monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
+    monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
+
+    summary = memory_service._LLMCommandSummarizer().summarize_command(_build_memory_input())
+
+    assert summary == "命令总结"
+    assert _FakeLLFactory.requested_tiers == ["small"]
+    assert _FakeMemoryAgent.created_models == ["fake-model"]
+    assert "beartools doctor" in _FakeMemoryAgent.prompt_inputs[0]
+    assert _FakeLLFactory.close_calls == ["closed"]
+
+
+def test_llm_daily_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeLLFactory.requested_tiers = []
+    _FakeLLFactory.close_calls = []
+    _FakeMemoryAgent.created_models = []
+    _FakeMemoryAgent.prompt_inputs = []
+    _FakeMemoryAgent.output = "日总结"
+
+    monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
+    monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
+
+    summary = memory_service._LLMDailySummarizer().summarize_day("day content")
+
+    assert summary == "日总结"
+    assert _FakeLLFactory.requested_tiers == ["large"]
+    assert _FakeMemoryAgent.created_models == ["fake-model"]
+    assert _FakeMemoryAgent.prompt_inputs == [build_daily_summary_prompt("day content")]
+    assert _FakeLLFactory.close_calls == ["closed"]

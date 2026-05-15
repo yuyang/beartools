@@ -5,7 +5,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 import importlib
 import inspect
@@ -26,6 +27,11 @@ class _AsyncOpenAIFactory(Protocol):
         timeout: float | None = ...,
         default_headers: Mapping[str, str] | None = ...,
     ) -> object: ...
+
+
+class _ClosableAsyncClient(Protocol):
+    def close(self) -> Awaitable[object] | object:
+        """关闭异步客户端。"""
 
 
 class _OpenAIModule(Protocol):
@@ -62,6 +68,26 @@ class LLFactoryError(RuntimeError):
     """LLM 工厂配置错误。"""
 
 
+@dataclass(frozen=True)
+class LLModelBundle:
+    """LLM 模型与底层客户端的生命周期组合。"""
+
+    model: Model[object]
+    client: _ClosableAsyncClient
+
+    def close(self) -> None:
+        """同步关闭底层异步客户端，避免命令退出后遗留异步关闭任务。"""
+
+        asyncio.run(self.aclose())
+
+    async def aclose(self) -> None:
+        """异步关闭底层客户端。"""
+
+        close_result = self.client.close()
+        if inspect.isawaitable(close_result):
+            await cast(Awaitable[object], close_result)
+
+
 def _get_logger() -> _LoggerProtocol:
     """延迟获取日志器，避免模块导入阶段触发配置加载。"""
 
@@ -85,6 +111,11 @@ class LLFactory:
 
     def create(self, node: RuntimeNode | None = None, tier: AgentTier = "small") -> Model[object]:
         """创建并返回当前活动节点对应的 PydanticAI 模型。"""
+
+        return self.create_bundle(node=node, tier=tier).model
+
+    def create_bundle(self, node: RuntimeNode | None = None, tier: AgentTier = "small") -> LLModelBundle:
+        """创建模型与可关闭客户端组合。"""
 
         runtime_node = node or self._select_valid_node(get_llm_runtime(), tier=tier)
         if node is not None:
@@ -122,11 +153,12 @@ class LLFactory:
         )
         provider = openai_provider(openai_client=openai_client)
 
-        return openai_responses_model(
+        model = openai_responses_model(
             model_name=runtime_node.model,
             provider=provider,
             settings={"timeout": float(runtime_node.timeout_seconds)},
         )
+        return LLModelBundle(model=model, client=cast(_ClosableAsyncClient, openai_client))
 
     def _select_valid_node(self, runtime: LLRuntime, tier: AgentTier) -> RuntimeNode:
         """选择并探测当前可用节点，失败时切换到下一个节点。"""

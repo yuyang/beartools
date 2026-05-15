@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import calendar
+from collections.abc import Awaitable
 from dataclasses import replace
 from datetime import date, timedelta
 import os
@@ -25,8 +27,8 @@ class _RunResultProtocol(Protocol):
 
 
 class _AgentProtocol(Protocol):
-    def run_sync(self, prompt: str) -> _RunResultProtocol:
-        """同步运行模型。"""
+    def run(self, prompt: str) -> Awaitable[_RunResultProtocol]:
+        """异步运行模型。"""
 
 
 def get_memory_root() -> Path:
@@ -212,15 +214,33 @@ class _StaticDailySummarizer:
 
 class _LLMCommandSummarizer:
     def summarize_command(self, memory_input: CommandMemoryInput) -> str:
-        model = LLFactory().create(tier="small")
-        agent = cast(_AgentProtocol, Agent(model=model, output_type=str))
-        result = agent.run_sync(build_command_memory_prompt(memory_input))
+        return asyncio.run(_summarize_command_async(memory_input))
+
+
+async def _summarize_command_async(memory_input: CommandMemoryInput) -> str:
+    """在同一事件循环内运行命令摘要并关闭模型客户端。"""
+
+    model_bundle = LLFactory().create_bundle(tier="small")
+    try:
+        agent = cast(_AgentProtocol, Agent(model=model_bundle.model, output_type=str))
+        result = await agent.run(build_command_memory_prompt(memory_input))
         return str(result.output)
+    finally:
+        await model_bundle.aclose()
 
 
 class _LLMDailySummarizer:
     def summarize_day(self, day_content: str) -> str:
-        model = LLFactory().create(tier="large")
-        agent = cast(_AgentProtocol, Agent(model=model, output_type=str))
-        result = agent.run_sync(build_daily_summary_prompt(day_content))
+        return asyncio.run(_summarize_day_async(day_content))
+
+
+async def _summarize_day_async(day_content: str) -> str:
+    """在同一事件循环内运行日总结并关闭模型客户端。"""
+
+    model_bundle = LLFactory().create_bundle(tier="large")
+    try:
+        agent = cast(_AgentProtocol, Agent(model=model_bundle.model, output_type=str))
+        result = await agent.run(build_daily_summary_prompt(day_content))
         return str(result.output)
+    finally:
+        await model_bundle.aclose()
