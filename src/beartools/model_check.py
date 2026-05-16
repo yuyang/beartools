@@ -25,31 +25,27 @@ class _YamlModule(Protocol):
     def safe_load(self, stream: str) -> object: ...
 
 
-class _OpenAIChatCompletionsProtocol(Protocol):
+class _OpenAIResponsesProtocol(Protocol):
     def create(self, **kwargs: object) -> object: ...
 
 
-class _OpenAIChatProtocol(Protocol):
-    completions: _OpenAIChatCompletionsProtocol
-
-
 class _OpenAIClientProtocol(Protocol):
-    chat: _OpenAIChatProtocol
+    responses: _OpenAIResponsesProtocol
 
 
-class _ChatResponseWithChoices(Protocol):
-    choices: object
+class _ResponseWithOutputText(Protocol):
+    output_text: object
 
 
-class _ChatChoiceWithMessage(Protocol):
-    message: object
+class _ResponseWithOutput(Protocol):
+    output: object
 
 
-class _ChatMessageWithContent(Protocol):
+class _ResponseOutputItemWithContent(Protocol):
     content: object
 
 
-class _ChatContentPartWithText(Protocol):
+class _ResponseContentPartWithText(Protocol):
     text: object
 
 
@@ -328,33 +324,57 @@ def format_question_prompt(question: ModelCheckQuestion) -> str:
 
 
 def _extract_response_text(response: object) -> str:
-    if not hasattr(response, "choices"):
+    """从 Responses API 响应中提取文本。"""
+
+    if hasattr(response, "output_text"):
+        response_with_output_text = cast(_ResponseWithOutputText, response)
+        output_text = response_with_output_text.output_text
+        if isinstance(output_text, str):
+            return output_text.strip()
+
+    if not hasattr(response, "output"):
         return ""
-    response_with_choices = cast(_ChatResponseWithChoices, response)
-    choices = response_with_choices.choices
-    if not isinstance(choices, list) or not choices:
+
+    response_with_output = cast(_ResponseWithOutput, response)
+    output = response_with_output.output
+    if not isinstance(output, list):
         return ""
-    first_choice = choices[0]
-    if not hasattr(first_choice, "message"):
+
+    text_parts: list[str] = []
+    for item in output:
+        content = _get_output_item_content(item)
+        if isinstance(content, str):
+            text_parts.append(content)
+            continue
+        if not isinstance(content, list):
+            continue
+        text_parts.extend(_extract_content_part_text(part) for part in content)
+    return "".join(text_parts).strip()
+
+
+def _get_output_item_content(item: object) -> object:
+    """读取 Responses output item 的 content 字段。"""
+
+    if isinstance(item, dict):
+        return item.get("content")
+    if hasattr(item, "content"):
+        item_with_content = cast(_ResponseOutputItemWithContent, item)
+        return item_with_content.content
+    return ""
+
+
+def _extract_content_part_text(part: object) -> str:
+    """读取 Responses content part 的 text 字段。"""
+
+    if isinstance(part, dict):
+        text = part.get("text")
+    elif hasattr(part, "text"):
+        part_with_text = cast(_ResponseContentPartWithText, part)
+        text = part_with_text.text
+    else:
         return ""
-    choice_with_message = cast(_ChatChoiceWithMessage, first_choice)
-    message = choice_with_message.message
-    if not hasattr(message, "content"):
-        return ""
-    message_with_content = cast(_ChatMessageWithContent, message)
-    content = message_with_content.content
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for part in content:
-            if not hasattr(part, "text"):
-                continue
-            part_with_text = cast(_ChatContentPartWithText, part)
-            text = part_with_text.text
-            if isinstance(text, str):
-                text_parts.append(text)
-        return "".join(text_parts).strip()
+    if isinstance(text, str):
+        return text
     return ""
 
 
@@ -369,9 +389,9 @@ def parse_model_choice(raw_output: str, valid_options: set[str]) -> str | None:
 
 def _ask_question(client: _OpenAIClientProtocol, node: RuntimeNode, question: ModelCheckQuestion) -> ModelCheckAnswer:
     prompt = format_question_prompt(question)
-    response = client.chat.completions.create(
+    response = client.responses.create(
         model=node.model,
-        messages=[
+        input=[
             {"role": "system", "content": "你是一个严谨的选择题答题器，只输出一个选项字母。"},
             {"role": "user", "content": prompt},
         ],

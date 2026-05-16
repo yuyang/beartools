@@ -15,6 +15,7 @@ from beartools.model_check import (
     DEFAULT_MODEL_CHECK_REPORT_STEM,
     ModelCheckProgressEvent,
     ModelCheckQuestion,
+    _extract_response_text,
     filter_model_check_nodes,
     filter_model_check_questions,
     format_question_prompt,
@@ -26,7 +27,7 @@ from beartools.model_check import (
 )
 
 
-class _FakeChatCompletions:
+class _FakeResponses:
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs
         self.calls: list[dict[str, object]] = []
@@ -34,19 +35,12 @@ class _FakeChatCompletions:
     def create(self, **kwargs: object) -> object:
         self.calls.append(kwargs)
         output = self.outputs.pop(0)
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content=output),
-                )
-            ]
-        )
+        return SimpleNamespace(output_text=output)
 
 
 class _FakeClient:
     def __init__(self, outputs: list[str]) -> None:
-        self.completions = _FakeChatCompletions(outputs)
-        self.chat = SimpleNamespace(completions=self.completions)
+        self.responses = _FakeResponses(outputs)
 
 
 def _node(name: str = "small-1", model: str = "gpt-test", fingerprint: str = "fp") -> RuntimeNode:
@@ -163,7 +157,27 @@ def test_run_model_check_for_node_summarizes_answers(monkeypatch) -> None:
     assert result.correct_count == 1
     assert result.total_count == 2
     assert result.accuracy == 0.5
-    assert fake_client.completions.calls[0]["model"] == "gpt-test"
+    assert fake_client.responses.calls[0]["model"] == "gpt-test"
+    assert fake_client.responses.calls[0]["temperature"] == 0
+    response_input = fake_client.responses.calls[0]["input"]
+    assert isinstance(response_input, list)
+    assert response_input[0]["role"] == "system"
+    assert response_input[1]["role"] == "user"
+    assert "只输出一个选项字母" in response_input[1]["content"]
+
+
+def test_extract_response_text_from_output_items() -> None:
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                content=[
+                    SimpleNamespace(text="B"),
+                ],
+            )
+        ]
+    )
+
+    assert _extract_response_text(response) == "B"
 
 
 def test_run_model_check_for_node_reports_progress(monkeypatch) -> None:

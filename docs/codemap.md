@@ -97,7 +97,7 @@ beartools = "beartools.cli:_main_wrapper"
 - `model_check.py`
   - 读取 `check/questions.yaml` 或指定 YAML/JSON 题库。
   - 支持用 `--id` 只测试指定题目 ID，用 `--model-name` / `-m` 只测试匹配的节点 name 或 model。
-  - 遍历 `agent.large` 和 `agent.small` 中的去重模型节点，逐题调用 Chat Completions 兼容接口。
+  - 遍历 `agent.large` 和 `agent.small` 中的去重模型节点，逐题调用 Responses API。
   - 只接受 `A` 到 `Z` 的单字母选择题答案，模型输出解释、标点或包装文本时判错。
   - 对外提供题库加载、进度与单题结果事件回调、单节点评测、完整评测和 Markdown 报告渲染。
 - `prompt/template.py`
