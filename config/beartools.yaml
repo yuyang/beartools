@@ -53,6 +53,7 @@ doctor:
 #   - 运行时按列表顺序选择第一个可用节点，对应列表全部不可用则报错
 agent:
   large:
+
     - name: "naiba"
       provider: "openai"
       base_url: "https://api-xai.ainaibahub.com/v1"
@@ -68,6 +69,7 @@ agent:
       timeout_seconds: 30
 
   small:
+
     - name: "aiba-1"
       provider: "openrouter"
       base_url: "https://api-xai.ainaibahub.com/v1"
