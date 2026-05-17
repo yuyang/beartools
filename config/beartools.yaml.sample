@@ -69,7 +69,7 @@ siyuan:
 # 说明：
 #   - agent.large / agent.small 都是必填非空列表
 #   - large 表示偏大、偏慢的模型池；small 表示偏小、偏快的模型池
-#   - provider 支持 openai/openrouter/anthropic；openrouter 按 OpenAI 兼容接口处理
+#   - provider 仅支持 openai/anthropic
 #   - 运行时按列表顺序选择第一个可用节点，对应列表全部不可用则报错
 #   - 样例中的 api_key 仅为占位引用，请在生产环境使用 secrets 或环境变量注入真实密钥
 agent:
@@ -78,15 +78,15 @@ agent:
       provider: "openai"
       base_url: "https://api.example.com/v1"
       model: "gpt-5"
-      api_key: "@get agent.openrouter.key"
+      api_key: "@get agent.openai.key"
       extra_headers: {}
       timeout_seconds: 30
   small:
     - name: "small-1"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://api-backup.example.com/v1"
       model: "gpt-4.1-mini"
-      api_key: "@get agent.openrouter.key"
+      api_key: "@get agent.openai.key"
       extra_headers: {}
       timeout_seconds: 30
 

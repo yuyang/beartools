@@ -88,19 +88,20 @@ beartools = "beartools.cli:_main_wrapper"
 - `llm/runtime.py`
   - 将配置中的 agent 节点转换为运行时节点池。
   - 对 `small`、`large` 两个 tier 做健康探测、去重、故障标记和轮换。
-  - `openai` / `openrouter` 节点使用 OpenAI Responses API 探测；`anthropic` 节点使用 Anthropic Messages API 探测。
-  - 对外提供 `get_active_llm_node()`、`mark_active_llm_node_failed()`、`get_llm_runtime()`。
+  - `openai` 节点使用 OpenAI Responses API 探测；`anthropic` 节点使用 Anthropic Messages API 探测。
+  - 对外公开 `RuntimeNodeSummary(name, tier, provider)`、`LLRuntime.list_models()`、`LLRuntime.create_client()`、`LLRuntime.create_async_client()`。
+  - `RuntimeNode` 仍持有敏感配置与探测细节，但不再作为推荐公开调用契约。
 - `llm/factory.py`
-  - 只负责从 `large` / `small` 健康节点池中选择配置并构建 SDK client，不再依赖或返回 PydanticAI model。
-  - `LLFactory.create_client()` / `create_async_client()` 按 `model`、`type=openai|openrouter|anthropic|any` 和 `model_size=small|large` 选择第一个匹配健康节点；`model` 同时匹配节点 `name` 和 `model`。
-  - `create_client_for_node()` / `create_async_client_for_node()` 供 `model check` 等已经自己枚举节点的调用方按指定 `RuntimeNode` 构建 client。
-  - `openai` / `openrouter` 构建 OpenAI 兼容 client；`anthropic` 构建 Anthropic client；client 的关闭由调用方负责。
+  - 保留为轻量公开入口，内部委托 `LLRuntime` 选择节点并构建 SDK client。
+  - `LLFactory.create_client()` / `create_async_client()` 支持 `type=openai|anthropic|any`，并按 `model_size=small|large` 选择节点；`model` 同时匹配节点 `name` 和内部真实 model。
+  - 不再暴露 `create_client_for_node()` / `create_async_client_for_node()`。
+  - client 的关闭仍由调用方负责。
 - `llm/pydantic_openai.py`
   - 调用方侧 PydanticAI OpenAI Responses model 封装工具；需要结构化输出的业务模块拿到 OpenAI 兼容 client 后自行封装。
 - `model_check.py`
   - 读取 `check/questions.yaml` 或指定 YAML/JSON 题库。
   - 支持用 `--id` 只测试指定题目 ID，用 `--model-name` / `-m` 只测试匹配的节点 name 或 model。
-  - 遍历 `agent.large` 和 `agent.small` 中的去重模型节点，通过 `LLFactory.create_client_for_node()` 获取已选节点的 OpenAI 兼容 client，逐题调用 Responses API。
+  - 通过 `LLRuntime.list_models()` 收集 small/large 可用模型摘要，再通过 `LLFactory.create_client(name=..., model_size=...)` 获取 OpenAI 兼容 client，逐题调用 Responses API。
   - 只接受 `A` 到 `Z` 的单字母选择题答案，模型输出解释、标点或包装文本时判错。
   - 对外提供题库加载、进度与单题结果事件回调、单节点评测、完整评测和 Markdown 报告渲染。
 - `prompt/template.py`
@@ -116,7 +117,7 @@ beartools = "beartools.cli:_main_wrapper"
   - 读取用户显式指定的 eval YAML，格式为 `cases[].id`、`cases[].prompt`、`cases[].params`、`cases[].expect.json`。
   - 第一版只支持 `prompts/*.md` 模板，不支持代码内动态 prompt。
   - 模型输出必须是纯 JSON 对象，不自动剥离 Markdown 代码块或解释文字；`expect.json` 使用精确子集匹配。
-  - `check eval` 必须显式传 `--tier small|large`，并通过 `LLFactory().create(tier=...)` 创建模型。
+  - `check eval` 必须显式传 `--tier small|large`，并通过 `LLRuntime.list_models("openai", tier)` + `LLFactory().create_async_client(name=..., model_size=...)` 创建模型。
 
 ### CLI 记忆
 
@@ -127,7 +128,7 @@ beartools = "beartools.cli:_main_wrapper"
 - `memory/service.py`
   - 计算 `memory/day/YYYY-MM-DD.md` 和 `memory/summary/YYYY-MM-DD.md` 路径。
   - 单次命令记忆追加写入 day 文件，保留模型摘要、退出码、help 摘要以及截断后的 console stdout/stderr。
-  - 单次命令记忆普通命令使用 small 模型；`--help` / `-h` 命令直接用 help 信息生成摘要；`diary summary` 和 `diary append` 使用 large 模型。
+  - 单次命令记忆普通命令使用 runtime small OpenAI 摘要模型；`--help` / `-h` 命令直接用 help 信息生成摘要；`diary summary` 和 `diary append` 使用 runtime large OpenAI 模型。
   - `diary append` 只补齐缺失 summary，不覆盖已有 summary。
 
 ### 账单模块
@@ -180,7 +181,7 @@ beartools = "beartools.cli:_main_wrapper"
 
 - `gmail.py`
   - 构造 Gmail 查询，拉取邮件列表和详情，提取正文。
-  - 调用 LLM 生成摘要，并写入 Markdown 文件。
+  - 调用 runtime small OpenAI 模型生成摘要，并写入 Markdown 文件。
   - 校验单个收件人邮箱，构造 Gmail API 纯文本 `raw` payload，并通过 `send_plain_text_email()` 发送邮件。
 - `newsnow.py`
   - 通过 `opencli` / 本地浏览器能力抓取 NewsNow 当前可见卡片。

@@ -9,7 +9,7 @@ from pydantic_ai import Agent
 
 from beartools.llm.factory import LLFactory
 from beartools.llm.pydantic_openai import create_openai_responses_model
-from beartools.llm.runtime import RuntimeNode, get_llm_runtime
+from beartools.llm.runtime import RuntimeNodeSummary, get_llm_runtime
 from beartools.prompt import get_prompt_manager
 
 from .calculate_tool import calculate_expression
@@ -22,10 +22,28 @@ from .models import (
 )
 
 
-async def _create_openai_client(node: RuntimeNode) -> AsyncOpenAI:
+def _first_openai_summary() -> RuntimeNodeSummary:
+    runtime = get_llm_runtime()
+    if hasattr(runtime, "list_models"):
+        summaries = runtime.list_models("openai", "small")
+        if not summaries:
+            raise RuntimeError("bill 当前没有可用的 OpenAI 模型")
+        return summaries[0]
+    legacy_node = runtime.get_active_node()
+    return RuntimeNodeSummary(
+        name=legacy_node.name,
+        tier="small",
+        provider="openai",
+        _model=legacy_node.model,
+        _base_url="",
+        _timeout_seconds=legacy_node.timeout_seconds,
+    )
+
+
+async def _create_openai_client(node: RuntimeNodeSummary) -> AsyncOpenAI:
     """由账单调用方获取 OpenAI 兼容 SDK client。"""
 
-    client = await LLFactory().create_async_client_for_node(node)
+    client = await LLFactory().create_async_client(name=node.name, model_size=node.tier)
     if not isinstance(client, AsyncOpenAI):
         raise RuntimeError("bill 当前只支持 OpenAI 兼容 client")
     return client
@@ -48,34 +66,25 @@ def resolve_bill_structure(preview: BillPreview) -> BillStructureFileResult:
 async def _resolve_bill_structure_async(prompt: str) -> BillStructureFileResult:
     """异步调用 LLM 识别单个账单文件结构。"""
 
-    runtime = get_llm_runtime()
-    max_attempts = len(runtime.available_nodes)
-    for _ in range(max_attempts):
-        node = runtime.get_active_node()
-        try:
-            client = await _create_openai_client(node)
-            async with client:
-                model = create_openai_responses_model(
-                    client,
-                    model_name=node.model,
-                    timeout_seconds=float(node.timeout_seconds),
-                )
-                agent: Agent[None, BillStructureResult] = Agent(
-                    model,
-                    output_type=BillStructureResult,
-                    system_prompt="你是账单结构识别助手，只能返回符合 schema 的 JSON。",
-                )
-                result = await agent.run(prompt)
-        except Exception as exc:
-            runtime.mark_node_failed(node, error=exc)
-            raise
+    node = _first_openai_summary()
+    client = await _create_openai_client(node)
+    async with client:
+        model = create_openai_responses_model(
+            client,
+            model_name=node._model,
+            timeout_seconds=float(node._timeout_seconds),
+        )
+        agent: Agent[None, BillStructureResult] = Agent(
+            model,
+            output_type=BillStructureResult,
+            system_prompt="你是账单结构识别助手，只能返回符合 schema 的 JSON。",
+        )
+        result = await agent.run(prompt)
 
-        output = result.output
-        if not output.files:
-            raise RuntimeError("LLM 未返回任何账单结构结果")
-        return output.files[0]
-
-    raise RuntimeError("LLM 请求失败，且没有可用的健康节点")
+    output = result.output
+    if not output.files:
+        raise RuntimeError("LLM 未返回任何账单结构结果")
+    return output.files[0]
 
 
 def analyze_bill_row(
@@ -95,20 +104,19 @@ def analyze_bill_row(
             "amount": amount,
         },
     )
-    runtime = get_llm_runtime()
-    node = runtime.get_active_node()
+    node = _first_openai_summary()
     return asyncio.run(_analyze_bill_row_async(node, prompt))
 
 
-async def _analyze_bill_row_async(node: RuntimeNode, prompt: str) -> BillAnalysisResult:
+async def _analyze_bill_row_async(node: RuntimeNodeSummary, prompt: str) -> BillAnalysisResult:
     """异步调用 LLM 分析单行账单。"""
 
     client = await _create_openai_client(node)
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node.model,
-            timeout_seconds=float(node.timeout_seconds),
+            model_name=node._model,
+            timeout_seconds=float(node._timeout_seconds),
         )
         agent: Agent[None, BillAnalysisResult] = Agent(
             model,
@@ -141,20 +149,19 @@ def resolve_part_refund_amount(
             "transaction_time": transaction_time,
         },
     )
-    runtime = get_llm_runtime()
-    node = runtime.get_active_node()
+    node = _first_openai_summary()
     return asyncio.run(_resolve_part_refund_amount_async(node, prompt))
 
 
-async def _resolve_part_refund_amount_async(node: RuntimeNode, prompt: str) -> PartRefundAmountResult:
+async def _resolve_part_refund_amount_async(node: RuntimeNodeSummary, prompt: str) -> PartRefundAmountResult:
     """异步调用 LLM 修正部分退款金额。"""
 
     client = await _create_openai_client(node)
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node.model,
-            timeout_seconds=float(node.timeout_seconds),
+            model_name=node._model,
+            timeout_seconds=float(node._timeout_seconds),
         )
         agent: Agent[None, PartRefundAmountResult] = Agent(
             model,

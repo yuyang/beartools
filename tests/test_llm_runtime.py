@@ -63,11 +63,11 @@ def create_runtime_node(name: str, *, extra_headers: dict[str, str] | None = Non
 
 class TestLLRuntime:
     def test_runtime_node_adapts_provider(self) -> None:
-        config = create_agent_node_config("primary", provider="openrouter")
+        config = create_agent_node_config("primary", provider="openai")
 
         runtime_node = runtime_module.RuntimeNode.from_config(config)
 
-        assert runtime_node.provider == "openrouter"
+        assert runtime_node.provider == "openai"
 
     def test_runtime_prefers_primary_node_by_default(self) -> None:
         primary = create_runtime_node("primary")
@@ -118,7 +118,7 @@ class TestLLRuntime:
 
     def test_runtime_uses_only_primary_when_primary_probe_succeeds(self) -> None:
         primary = create_agent_node_config("primary", provider="openai")
-        candidate_a = create_agent_node_config("candidate-a", provider="openrouter")
+        candidate_a = create_agent_node_config("candidate-a", provider="openai")
         candidate_b = create_agent_node_config("candidate-b", provider="openai")
         config = create_config(large=[primary], small=[candidate_a, candidate_b])
 
@@ -141,7 +141,7 @@ class TestLLRuntime:
 
     def test_runtime_raises_when_large_pool_has_no_healthy_node(self) -> None:
         primary = create_agent_node_config("primary", provider="openai")
-        candidate_a = create_agent_node_config("candidate-a", provider="openrouter")
+        candidate_a = create_agent_node_config("candidate-a", provider="openai")
         candidate_b = create_agent_node_config("candidate-b", provider="openai")
         config = create_config(large=[primary], small=[candidate_a, candidate_b])
 

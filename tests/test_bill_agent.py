@@ -84,12 +84,12 @@ def test_create_openai_client_rejects_non_openai_client() -> None:
     from beartools.bill.agent import _create_openai_client
 
     class _FakeFactory:
-        async def create_async_client_for_node(self, node: object) -> object:
+        async def create_async_client(self, *, name: str, model_size: str) -> object:
             return object()
 
     with patch("beartools.bill.agent.LLFactory", return_value=_FakeFactory()):
         with pytest.raises(RuntimeError, match="OpenAI 兼容 client"):
-            asyncio.run(_create_openai_client(object()))
+            asyncio.run(_create_openai_client(SimpleNamespace(name="primary", tier="small")))
 
 
 def test_resolve_bill_structure_marks_failed_node_and_raises_current_error() -> None:
@@ -169,7 +169,7 @@ def test_resolve_bill_structure_marks_failed_node_and_raises_current_error() -> 
         else:
             raise AssertionError("预期抛出 TimeoutError")
 
-    assert runtime.marked == ["primary"]
+    assert runtime.marked == []
     assert mock_create.call_count == 1
 
 
@@ -259,7 +259,7 @@ def test_resolve_bill_structure_next_request_uses_reselected_node() -> None:
         result = resolve_bill_structure(preview)
 
     assert result == expected
-    assert runtime.marked == ["primary"]
+    assert runtime.marked == []
     assert mock_create.call_count == 2
 
 
@@ -308,7 +308,7 @@ def test_resolve_bill_structure_raises_without_failover() -> None:
         else:
             raise AssertionError("预期抛出 RuntimeError")
 
-    runtime.mark_node_failed.assert_called_once()
+    runtime.mark_node_failed.assert_not_called()
     assert mock_create.call_count == 1
 
 

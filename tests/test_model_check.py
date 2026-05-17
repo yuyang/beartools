@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from beartools.cli import app
 from beartools.commands.model.command import _print_answer, _print_progress, resolve_default_report_path
-from beartools.llm.runtime import RuntimeNode
+from beartools.llm.runtime import RuntimeNode, RuntimeNodeSummary
 from beartools.model_check import (
     ALLOWED_MODEL_CHECK_CHOICES,
     DEFAULT_MODEL_CHECK_OUTPUT_DIR,
@@ -55,10 +55,10 @@ class _FakeClient:
 
 class _FakeLLFactory:
     clients: list[_FakeClient] = []
-    nodes: list[RuntimeNode] = []
+    requests: list[tuple[str, str]] = []
 
-    def create_client_for_node(self, node: RuntimeNode) -> _FakeClient:
-        self.nodes.append(node)
+    def create_client(self, *, name: str, model_size: str) -> _FakeClient:
+        self.requests.append((name, model_size))
         return self.clients.pop(0)
 
 
@@ -72,6 +72,17 @@ def _node(name: str = "small-1", model: str = "gpt-test", fingerprint: str = "fp
         extra_headers={},
         timeout_seconds=30,
         fingerprint=fingerprint,
+    )
+
+
+def _summary(name: str = "small-1", tier: str = "small", model: str = "gpt-test") -> RuntimeNodeSummary:
+    return RuntimeNodeSummary(
+        name=name,
+        tier=tier,
+        provider="openai",
+        _model=model,
+        _base_url="https://example.com/v1",
+        _timeout_seconds=30,
     )
 
 
@@ -145,12 +156,12 @@ def test_filter_model_check_questions_by_id() -> None:
 
 def test_filter_model_check_nodes_by_name_or_model() -> None:
     nodes = [
-        ("small", _node(name="node-a", model="model-a", fingerprint="a")),
-        ("large", _node(name="node-b", model="model-b", fingerprint="b")),
+        _summary(name="node-a", tier="small", model="model-a"),
+        _summary(name="node-b", tier="large", model="model-b"),
     ]
 
-    assert [node.name for _, node in filter_model_check_nodes(nodes, "node-b")] == ["node-b"]
-    assert [node.model for _, node in filter_model_check_nodes(nodes, "model-a")] == ["model-a"]
+    assert [node.name for node in filter_model_check_nodes(nodes, "node-b")] == ["node-b"]
+    assert [node._model for node in filter_model_check_nodes(nodes, "model-a")] == ["model-a"]
 
 
 def test_format_question_prompt_requires_single_letter_output() -> None:
@@ -166,7 +177,7 @@ def test_format_question_prompt_requires_single_letter_output() -> None:
 def test_run_model_check_for_node_summarizes_answers(monkeypatch) -> None:
     fake_client = _FakeClient(["B", "A"])
     _FakeLLFactory.clients = [fake_client]
-    _FakeLLFactory.nodes = []
+    _FakeLLFactory.requests = []
     monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
     monkeypatch.setattr("beartools.model_check.OpenAI", _FakeClient)
     questions = [
@@ -174,12 +185,12 @@ def test_run_model_check_for_node_summarizes_answers(monkeypatch) -> None:
         ModelCheckQuestion(id="q2", question="2+2?", options={"A": "3", "B": "4"}, answer="B"),
     ]
 
-    result = run_model_check_for_node(tier="small", node=_node(), questions=questions)
+    result = run_model_check_for_node(tier="small", node=_summary(), questions=questions)
 
     assert result.correct_count == 1
     assert result.total_count == 2
     assert result.accuracy == 0.5
-    assert _FakeLLFactory.nodes == [_node()]
+    assert _FakeLLFactory.requests == [("small-1", "small")]
     assert fake_client.responses.calls[0]["model"] == "gpt-test"
     assert fake_client.responses.calls[0]["temperature"] == 0
     response_input = fake_client.responses.calls[0]["input"]
@@ -206,7 +217,7 @@ def test_extract_response_text_from_output_items() -> None:
 def test_run_model_check_for_node_reports_progress(monkeypatch) -> None:
     fake_client = _FakeClient(["B", "A"])
     _FakeLLFactory.clients = [fake_client]
-    _FakeLLFactory.nodes = []
+    _FakeLLFactory.requests = []
     monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
     monkeypatch.setattr("beartools.model_check.OpenAI", _FakeClient)
     questions = [
@@ -217,7 +228,7 @@ def test_run_model_check_for_node_reports_progress(monkeypatch) -> None:
 
     run_model_check_for_node(
         tier="small",
-        node=_node(),
+        node=_summary(),
         questions=questions,
         progress_callback=events.append,
         node_index=2,
@@ -244,7 +255,7 @@ def test_run_model_check_for_node_reports_answers(monkeypatch) -> None:
     ]
     events = []
 
-    run_model_check_for_node(tier="small", node=_node(), questions=questions, answer_callback=events.append)
+    run_model_check_for_node(tier="small", node=_summary(), questions=questions, answer_callback=events.append)
 
     assert [event.answer.correct for event in events] == [True, False]
     assert events[0].completed_steps == 1
@@ -275,22 +286,25 @@ questions:
     )
     fake_client = _FakeClient(["B"])
     _FakeLLFactory.clients = [fake_client]
-    _FakeLLFactory.nodes = []
+    _FakeLLFactory.requests = []
     nodes = [
-        ("small", _node(name="node-a", model="model-a", fingerprint="a")),
-        ("large", _node(name="node-b", model="model-b", fingerprint="b")),
+        _summary(name="node-a", tier="small", model="model-a"),
+        _summary(name="node-b", tier="large", model="model-b"),
     ]
     monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
     monkeypatch.setattr("beartools.model_check.OpenAI", _FakeClient)
-    monkeypatch.setattr("beartools.model_check.collect_model_check_nodes", lambda: nodes)
+    monkeypatch.setattr(
+        "beartools.model_check.get_llm_runtime",
+        lambda: SimpleNamespace(list_models=lambda provider, tier: [node for node in nodes if node.tier == tier]),
+    )
 
     report = run_model_check(questions_path, question_id="q2", model_name="model-b")
 
     assert report.total_questions == 1
     assert report.questions[0].id == "q2"
     assert len(report.results) == 1
-    assert report.results[0].node.model == "model-b"
-    assert _FakeLLFactory.nodes == [nodes[1][1]]
+    assert report.results[0].node.name == "node-b"
+    assert _FakeLLFactory.requests == [("node-b", "large")]
 
 
 def test_render_model_check_markdown_includes_summary(monkeypatch) -> None:
@@ -300,7 +314,7 @@ def test_render_model_check_markdown_includes_summary(monkeypatch) -> None:
     monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
     monkeypatch.setattr("beartools.model_check.OpenAI", _FakeClient)
     questions = [ModelCheckQuestion(id="q1", question="1+1?", options={"A": "1", "B": "2"}, answer="B")]
-    result = run_model_check_for_node(tier="small", node=_node(), questions=questions)
+    result = run_model_check_for_node(tier="small", node=_summary(), questions=questions)
 
     markdown = render_model_check_markdown(SimpleNamespace(total_questions=1, results=[result], questions=questions))
 
@@ -353,8 +367,8 @@ def test_cli_progress_prints_name_model_and_base_url(monkeypatch) -> None:
     _print_progress(event)
 
     assert "name=small-1" in calls[0]
-    assert "model=gpt-test" in calls[0]
-    assert "base_url=https://example.com/v1" in calls[0]
+    assert "provider=openai" in calls[0]
+    assert "base_url" not in calls[0]
 
 
 def test_cli_answer_prints_correct_or_wrong_result(monkeypatch) -> None:

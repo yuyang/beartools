@@ -23,21 +23,38 @@ from pydantic_ai import Agent
 from beartools.config import GmailConfig, get_config
 from beartools.llm.factory import LLFactory
 from beartools.llm.pydantic_openai import create_openai_responses_model
-from beartools.llm.runtime import RuntimeNode, get_openai_compatible_node
+from beartools.llm.runtime import RuntimeNodeSummary, get_llm_runtime
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"]
 EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ProgressCallback = Callable[[str], None]
 
 
-async def _create_openai_summary_client() -> tuple[RuntimeNode, AsyncOpenAI]:
+class _LegacyModelNodeProtocol(Protocol):
+    model: str
+    timeout_seconds: int
+
+
+async def _create_openai_summary_client() -> tuple[RuntimeNodeSummary, AsyncOpenAI]:
     """创建 Gmail 摘要用 OpenAI client。"""
 
-    node = get_openai_compatible_node("small")
-    client = await LLFactory().create_async_client_for_node(node)
+    node = get_llm_runtime().list_models("openai", "small")[0]
+    client = await LLFactory().create_async_client(name=node.name, model_size=node.tier)
     if not isinstance(client, AsyncOpenAI):
         raise RuntimeError("Gmail 摘要当前只支持 OpenAI 兼容 client")
     return node, client
+
+
+def _resolve_model_name(node: RuntimeNodeSummary | object) -> str:
+    if isinstance(node, RuntimeNodeSummary):
+        return node._model
+    return cast(_LegacyModelNodeProtocol, node).model
+
+
+def _resolve_timeout_seconds(node: RuntimeNodeSummary | object) -> float:
+    if isinstance(node, RuntimeNodeSummary):
+        return float(node._timeout_seconds)
+    return float(cast(_LegacyModelNodeProtocol, node).timeout_seconds)
 
 
 async def _summarize_messages_async(prompt: str) -> str:
@@ -47,8 +64,8 @@ async def _summarize_messages_async(prompt: str) -> str:
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node.model,
-            timeout_seconds=float(node.timeout_seconds),
+            model_name=_resolve_model_name(node),
+            timeout_seconds=_resolve_timeout_seconds(node),
         )
         summary_agent: Agent[None, str] = Agent(model=model, output_type=str)
         summary_result = await summary_agent.run(prompt)

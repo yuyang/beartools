@@ -2,16 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Literal
+from typing import Literal, cast
 
-from anthropic import Anthropic
+from anthropic import Anthropic, AsyncAnthropic
 import httpx
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, OpenAI
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
 
 from beartools.config import AgentNodeConfig, get_config
 
 AgentTier = Literal["large", "small"]
+ProviderType = Literal["openai", "anthropic", "any"]
 
 
 class LLMRuntimeError(RuntimeError):
@@ -58,6 +59,16 @@ class RuntimeNode:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeNodeSummary:
+    name: str
+    tier: AgentTier
+    provider: ProviderType
+    _model: str = field(repr=False)
+    _base_url: str = field(repr=False)
+    _timeout_seconds: int = field(repr=False)
+
+
 @dataclass(slots=True)
 class LLRuntime:
     """公开运行时类型，供工厂与后续测试共享状态。"""
@@ -96,6 +107,36 @@ class LLRuntime:
     def available_nodes_for_tier(self, tier: AgentTier) -> list[RuntimeNode]:
         return [node for node in self._nodes_for_tier(tier) if node.fingerprint not in self._failed_fingerprints[tier]]
 
+    def list_models(self, provider: ProviderType = "any", tier: AgentTier = "small") -> list[RuntimeNodeSummary]:
+        """返回指定 tier/provider 的公开模型摘要。"""
+
+        return [
+            RuntimeNodeSummary(
+                name=node.name,
+                tier=tier,
+                provider=cast(ProviderType, node.provider),
+                _model=node.model,
+                _base_url=node.base_url,
+                _timeout_seconds=node.timeout_seconds,
+            )
+            for node in self.available_nodes_for_tier(tier)
+            if _provider_matches(provider, node.provider)
+        ]
+
+    def create_client(self, name: str, tier: AgentTier = "small") -> OpenAI | Anthropic:
+        """按名称和 tier 创建同步 client。"""
+
+        node = self._get_node_by_name(name, tier)
+        probe_runtime_node(node)
+        return _create_client_for_node(node)
+
+    async def create_async_client(self, name: str, tier: AgentTier = "small") -> AsyncOpenAI | AsyncAnthropic:
+        """按名称和 tier 创建异步 client。"""
+
+        node = self._get_node_by_name(name, tier)
+        probe_runtime_node(node)
+        return _create_async_client_for_node(node)
+
     def mark_node_failed(
         self, node: RuntimeNode, error: BaseException | None = None, tier: AgentTier = "small"
     ) -> bool:
@@ -128,6 +169,13 @@ class LLRuntime:
             return node.fingerprint
         return None
 
+    def _get_node_by_name(self, name: str, tier: AgentTier) -> RuntimeNode:
+        for node in self.available_nodes_for_tier(tier):
+            if node.name == name:
+                return node
+        available_names = ", ".join(node.name for node in self.available_nodes_for_tier(tier))
+        raise LLMRuntimeNoHealthyNodeError(f"{tier} 未找到可用模型: {name}；可用模型: {available_names}")
+
 
 _runtime_instance: LLRuntime | None = None
 _runtime_lock = Lock()
@@ -141,6 +189,44 @@ def _openai_client_factory(
     default_headers: dict[str, str],
 ) -> OpenAI:
     return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, default_headers=default_headers)
+
+
+def _provider_matches(expected: ProviderType, actual: str) -> bool:
+    if expected == "any":
+        return True
+    return expected == actual
+
+
+def _create_client_for_node(node: RuntimeNode) -> OpenAI | Anthropic:
+    if node.provider == "anthropic":
+        return Anthropic(
+            base_url=node.base_url,
+            api_key=node.api_key,
+            timeout=float(node.timeout_seconds),
+            default_headers=node.extra_headers,
+        )
+    return OpenAI(
+        base_url=node.base_url,
+        api_key=node.api_key,
+        timeout=float(node.timeout_seconds),
+        default_headers=node.extra_headers,
+    )
+
+
+def _create_async_client_for_node(node: RuntimeNode) -> AsyncOpenAI | AsyncAnthropic:
+    if node.provider == "anthropic":
+        return AsyncAnthropic(
+            base_url=node.base_url,
+            api_key=node.api_key,
+            timeout=float(node.timeout_seconds),
+            default_headers=node.extra_headers,
+        )
+    return AsyncOpenAI(
+        base_url=node.base_url,
+        api_key=node.api_key,
+        timeout=float(node.timeout_seconds),
+        default_headers=node.extra_headers,
+    )
 
 
 def _build_node_fingerprint(base_url: str, model: str, api_key: str, extra_headers: dict[str, str]) -> str:
@@ -171,7 +257,7 @@ def get_openai_compatible_node(tier: AgentTier) -> RuntimeNode:
 
     runtime = get_llm_runtime()
     for node in runtime.available_nodes_for_tier(tier):
-        if node.provider in {"openai", "openrouter"}:
+        if node.provider == "openai":
             return node
     raise LLMRuntimeNoHealthyNodeError(f"{tier} 没有可用的 OpenAI 兼容 LLM 节点")
 
@@ -410,7 +496,9 @@ __all__ = [
     "LLMRuntimeInitializationError",
     "LLMRuntimeNoHealthyNodeError",
     "RuntimeNode",
+    "RuntimeNodeSummary",
     "LLRuntime",
+    "ProviderType",
     "create_llm_runtime",
     "get_llm_runtime",
     "get_active_llm_node",

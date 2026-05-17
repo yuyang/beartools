@@ -48,7 +48,7 @@ agent:
       timeout_seconds: "45"
   small:
     - name: "small-1"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://small1.example.com"
       model: "gpt-4o-mini"
       api_key: "@get test.small-1-key"
@@ -84,7 +84,7 @@ test:
         assert config.agent.large[0].timeout_seconds == 45
         assert len(config.agent.small) == 2
         assert config.agent.small[0].name == "small-1"
-        assert config.agent.small[0].provider == "openrouter"
+        assert config.agent.small[0].provider == "openai"
         assert config.agent.small[0].timeout_seconds == 20
         assert config.agent.small[1].name == "small-2"
         assert config.agent.small[1].provider == "openai"
@@ -128,7 +128,27 @@ agent:
 """
         )
 
-        with pytest.raises(RuntimeError, match=r"provider 仅支持 openai/openrouter/anthropic"):
+        with pytest.raises(RuntimeError, match=r"provider 仅支持 openai/anthropic"):
+            load_config()
+
+    def test_reject_openrouter_provider_value(self) -> None:
+        self._write_config(
+            """
+agent:
+  large:
+    - name: "large-1"
+      provider: "openrouter"
+      base_url: "https://large1.example.com"
+      model: "gpt-5"
+  small:
+    - name: "small-1"
+      provider: "openai"
+      base_url: "https://small1.example.com"
+      model: "gpt-4o-mini"
+"""
+        )
+
+        with pytest.raises(RuntimeError, match=r"provider 仅支持 openai/anthropic"):
             load_config()
 
     def test_parse_anthropic_agent_provider(self) -> None:
@@ -234,7 +254,7 @@ agent:
       api_key: "@get test.keys.a"
   small:
     - name: "small-a"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://small-a.example.com"
       model: "gpt-4.1-mini"
       api_key: "@get test.keys.a"
@@ -267,7 +287,7 @@ agent:
       api_key: "@get test.keys.b"
   small:
     - name: "candidate-b"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://candidate-b.example.com"
       model: "gpt-4o-mini"
       api_key: "@get test.candidate-b"
@@ -388,7 +408,7 @@ doctor:
             assert nodes
             for node in nodes:
                 assert set(node.keys()) == allowed_fields
-                assert node["provider"] in {"openai", "openrouter"}
+                assert node["provider"] in {"openai", "anthropic"}
 
         siyuan_data = sample_data["siyuan"]
         assert siyuan_data["token"] == "@get siyuan.token"
@@ -405,15 +425,15 @@ agent:
       provider: "openai"
       base_url: "https://primary.example.com"
       model: "gpt-4o-mini"
-      api_key: "@get agent.openrouter.key"
+      api_key: "@get agent.openai.key"
       extra_headers: {}
       timeout_seconds: 30
   small:
     - name: "small"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://small.example.com"
       model: "gpt-4.1-mini"
-      api_key: "@get agent.openrouter.key"
+      api_key: "@get agent.openai.key"
       extra_headers: {}
       timeout_seconds: 20
 siyuan:
@@ -425,7 +445,7 @@ siyuan:
 siyuan:
   token: "secret-token"
 agent:
-  openrouter:
+  openai:
     key: "secret-key"
 """
         )
@@ -446,19 +466,19 @@ agent:
       provider: "openai"
       base_url: "https://primary.example.com"
       model: "gpt-4o-mini"
-      api_key: "@get agent.openrouter.key"
+      api_key: "@get agent.openai.key"
   small:
     - name: "small"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://small.example.com"
       model: "gpt-4.1-mini"
-      api_key: "@get agent.openrouter.key"
+      api_key: "@get agent.openai.key"
 """
         )
         self._write_secrets(
             """
 agent:
-  openrouter:
+  openai:
     key: "secret-key"
 """
         )
@@ -491,7 +511,7 @@ agent:
                   api_key: "plain-key"
               small:
                 - name: "small"
-                  provider: "openrouter"
+                  provider: "openai"
                   base_url: "https://small.example.com"
                   model: "gpt-4.1-mini"
                   api_key: "plain-key"
@@ -533,7 +553,7 @@ agent:
       api_key: "@get agent.missing.key"
   small:
     - name: "small"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://small.example.com"
       model: "gpt-4.1-mini"
       api_key: "@get agent.missing.key"
@@ -555,7 +575,7 @@ agent:
       api_key: "@get agent.shared.key"
   small:
     - name: "backup"
-      provider: "openrouter"
+      provider: "openai"
       base_url: "https://backup.example.com"
       model: "gpt-4.1-mini"
       api_key: "@get agent.shared.key"
@@ -579,8 +599,8 @@ agent:
         sample_data = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
 
         assert sample_data["siyuan"]["token"] == "@get siyuan.token"
-        assert sample_data["agent"]["large"][0]["api_key"] == "@get agent.openrouter.key"
-        assert sample_data["agent"]["small"][0]["api_key"] == "@get agent.openrouter.key"
+        assert sample_data["agent"]["large"][0]["api_key"] == "@get agent.openai.key"
+        assert sample_data["agent"]["small"][0]["api_key"] == "@get agent.openai.key"
         assert sample_data["codex"]["api_key"] == "@get codex.api_key"
 
     def test_secrets_sample_contains_sensitive_values(self) -> None:
@@ -588,7 +608,7 @@ agent:
         sample_data = yaml.safe_load(sample_path.read_text(encoding="utf-8"))
 
         assert sample_data["siyuan"]["token"] == "REPLACE_ME"
-        assert sample_data["agent"]["openrouter"]["key"] == "REPLACE_ME"
+        assert sample_data["agent"]["openai"]["key"] == "REPLACE_ME"
         assert sample_data["agent"]["zhizengzeng"]["key"] == "REPLACE_ME"
 
     def test_load_config_parses_codex_section(self) -> None:

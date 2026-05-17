@@ -40,7 +40,7 @@ def _print_report(report: ModelCheckReport) -> None:
         table.add_row(
             result.tier,
             result.node.name,
-            result.node.model,
+            result.node._model,
             f"{result.correct_count}/{result.total_count}",
             f"{result.accuracy:.2%}",
             str(result.error_count),
@@ -58,7 +58,7 @@ def _print_progress(event: ModelCheckProgressEvent) -> None:
         "[dim]"
         f"[{current_step}/{event.total_steps}] "
         f"模型 {event.node_index}/{event.total_nodes}: "
-        f"tier={event.tier} name={event.node.name} model={event.node.model} base_url={event.node.base_url}，"
+        f"tier={event.tier} name={event.node.name} provider={event.node.provider}，"
         f"题目 {event.question_index}/{event.total_questions}: {event.question.id}"
         "[/dim]"
     )

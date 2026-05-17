@@ -15,7 +15,7 @@ import yaml
 
 from beartools.llm.factory import LLFactory
 from beartools.llm.pydantic_openai import create_openai_responses_model
-from beartools.llm.runtime import AgentTier, get_openai_compatible_node
+from beartools.llm.runtime import AgentTier, get_llm_runtime
 from beartools.prompt import PromptManager, TemplateNotFoundError
 
 
@@ -189,15 +189,15 @@ def _matches_expected_subset(actual: object, expected: object) -> bool:
 def create_eval_runner(tier: AgentTier) -> PromptEvalRunner:
     """创建真实 Prompt eval 运行器。"""
 
-    node = get_openai_compatible_node(tier)
-    client = asyncio.run(LLFactory().create_async_client_for_node(node))
+    node = get_llm_runtime().list_models("openai", tier)[0]
+    client = asyncio.run(LLFactory().create_async_client(name=node.name, model_size=node.tier))
     if not isinstance(client, AsyncOpenAI):
         raise RuntimeError("Prompt eval 当前只支持 OpenAI 兼容 client")
     asyncio.run(client.__aenter__())
     model = create_openai_responses_model(
         client,
-        model_name=node.model,
-        timeout_seconds=float(node.timeout_seconds),
+        model_name=node._model,
+        timeout_seconds=float(node._timeout_seconds),
     )
     agent: Agent[None, str] = Agent(model=model, output_type=str)
     return _PydanticPromptEvalRunner(client=client, agent=agent)

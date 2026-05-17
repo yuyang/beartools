@@ -12,9 +12,8 @@ from typing import Protocol, cast
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
-from beartools.config import AgentNodeConfig, get_config
 from beartools.llm.factory import LLFactory
-from beartools.llm.runtime import RuntimeNode
+from beartools.llm.runtime import AgentTier, RuntimeNodeSummary, get_llm_runtime
 
 DEFAULT_MODEL_CHECK_QUESTIONS_PATH = Path("check/questions.yaml")
 DEFAULT_MODEL_CHECK_OUTPUT_DIR = Path("output")
@@ -72,8 +71,8 @@ class ModelCheckAnswer:
 class ModelCheckNodeResult:
     """单个模型节点的评测汇总。"""
 
-    tier: str
-    node: RuntimeNode
+    tier: AgentTier
+    node: RuntimeNodeSummary
     answers: list[ModelCheckAnswer]
     duration_seconds: float
 
@@ -122,8 +121,8 @@ class ModelCheckReport:
 class ModelCheckProgressEvent:
     """模型评测进度事件。"""
 
-    tier: str
-    node: RuntimeNode
+    tier: AgentTier
+    node: RuntimeNodeSummary
     question: ModelCheckQuestion
     node_index: int
     total_nodes: int
@@ -137,8 +136,8 @@ class ModelCheckProgressEvent:
 class ModelCheckAnswerEvent:
     """模型评测单题结果事件。"""
 
-    tier: str
-    node: RuntimeNode
+    tier: AgentTier
+    node: RuntimeNodeSummary
     question: ModelCheckQuestion
     answer: ModelCheckAnswer
     node_index: int
@@ -246,37 +245,14 @@ def filter_model_check_questions(
     return filtered_questions
 
 
-def _runtime_nodes_from_config_nodes(config_nodes: list[AgentNodeConfig]) -> list[RuntimeNode]:
-    nodes: list[RuntimeNode] = []
-    seen_fingerprints: set[str] = set()
-    for config_node in config_nodes:
-        node = RuntimeNode.from_config(config_node)
-        if node.fingerprint in seen_fingerprints:
-            continue
-        nodes.append(node)
-        seen_fingerprints.add(node.fingerprint)
-    return nodes
+def collect_model_check_nodes() -> list[RuntimeNodeSummary]:
+    """收集 runtime 当前公开可见的所有模型摘要。"""
+
+    runtime = get_llm_runtime()
+    return runtime.list_models("any", "large") + runtime.list_models("any", "small")
 
 
-def collect_model_check_nodes() -> list[tuple[str, RuntimeNode]]:
-    """收集配置里的所有去重模型节点。"""
-
-    agent_config = get_config().agent
-    candidates: list[tuple[str, RuntimeNode]] = []
-    seen_fingerprints: set[str] = set()
-    for tier, config_nodes in (("large", agent_config.large), ("small", agent_config.small)):
-        for node in _runtime_nodes_from_config_nodes(config_nodes):
-            if node.fingerprint in seen_fingerprints:
-                continue
-            candidates.append((tier, node))
-            seen_fingerprints.add(node.fingerprint)
-    return candidates
-
-
-def filter_model_check_nodes(
-    nodes: list[tuple[str, RuntimeNode]],
-    model_name: str | None,
-) -> list[tuple[str, RuntimeNode]]:
+def filter_model_check_nodes(nodes: list[RuntimeNodeSummary], model_name: str | None) -> list[RuntimeNodeSummary]:
     """按模型 name 或 model 过滤节点。"""
 
     if model_name is None or not model_name.strip():
@@ -284,12 +260,10 @@ def filter_model_check_nodes(
 
     normalized_model_name = model_name.strip()
     filtered_nodes = [
-        (tier, node)
-        for tier, node in nodes
-        if node.name == normalized_model_name or node.model == normalized_model_name
+        node for node in nodes if node.name == normalized_model_name or node._model == normalized_model_name
     ]
     if not filtered_nodes:
-        available_models = ", ".join(f"{tier}/{node.name}/{node.model}" for tier, node in nodes)
+        available_models = ", ".join(f"{node.tier}/{node.name}/{node._model}" for node in nodes)
         raise RuntimeError(f"未找到模型: {normalized_model_name}，可用模型: {available_models}")
     return filtered_nodes
 
@@ -372,10 +346,10 @@ def parse_model_choice(raw_output: str, valid_options: set[str]) -> str | None:
     return None
 
 
-def _ask_question(client: OpenAI, node: RuntimeNode, question: ModelCheckQuestion) -> ModelCheckAnswer:
+def _ask_question(client: OpenAI, node: RuntimeNodeSummary, question: ModelCheckQuestion) -> ModelCheckAnswer:
     prompt = format_question_prompt(question)
     response = client.responses.create(
-        model=node.model,
+        model=node._model,
         input=[
             {"role": "system", "content": "你是一个严谨的选择题答题器，只输出一个选项字母。"},
             {"role": "user", "content": prompt},
@@ -401,8 +375,8 @@ def _format_error(error: BaseException) -> str:
 
 def run_model_check_for_node(
     *,
-    tier: str,
-    node: RuntimeNode,
+    tier: AgentTier,
+    node: RuntimeNodeSummary,
     questions: list[ModelCheckQuestion],
     progress_callback: ModelCheckProgressCallback | None = None,
     answer_callback: ModelCheckAnswerCallback | None = None,
@@ -413,7 +387,7 @@ def run_model_check_for_node(
     """对单个模型节点执行所有题目。"""
 
     start_time = time.time()
-    client = LLFactory().create_client_for_node(node)
+    client = LLFactory().create_client(name=node.name, model_size=tier)
     if not isinstance(client, OpenAI):
         raise RuntimeError("model check 当前只支持 OpenAI 兼容 client")
     with client:
@@ -486,10 +460,10 @@ def run_model_check(
 
     results: list[ModelCheckNodeResult] = []
     total_nodes = len(nodes)
-    for node_index, (tier, node) in enumerate(nodes, start=1):
+    for node_index, node in enumerate(nodes, start=1):
         results.append(
             run_model_check_for_node(
-                tier=tier,
+                tier=node.tier,
                 node=node,
                 questions=questions,
                 progress_callback=progress_callback,
@@ -517,7 +491,7 @@ def render_model_check_markdown(report: ModelCheckReport) -> str:
     for result in report.results:
         lines.append(
             "| "
-            f"{result.tier} | {result.node.name} | {result.node.model} | "
+            f"{result.tier} | {result.node.name} | {result.node._model} | "
             f"{result.correct_count}/{result.total_count} | {result.accuracy:.2%} | "
             f"{result.error_count} | {result.duration_seconds:.2f}s |"
         )
@@ -526,7 +500,7 @@ def render_model_check_markdown(report: ModelCheckReport) -> str:
     for result in report.results:
         lines.extend(
             [
-                f"### {result.tier}/{result.node.name} ({result.node.model})",
+                f"### {result.tier}/{result.node.name} ({result.node._model})",
                 "",
                 "| Question | Expected | Predicted | Correct | Raw Output | Error |",
                 "| --- | --- | --- | --- | --- | --- |",
