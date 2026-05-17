@@ -273,11 +273,10 @@ def _build_refine_instructions(template_name: str) -> str:
     return get_prompt_manager().render(template_name)
 
 
-async def _refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+async def _refine_pic_prompt_async(prompt: str, config: CodexConfig, client: AsyncOpenAI) -> str:
     """先用文本模型把原始 Markdown 润色成更适合做图的提示词。"""
 
     set_tracing_disabled(True)
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
     model = OpenAIResponsesModel(model=config.model, openai_client=client)
     agent = Agent(
         name="Codex Pic Prompt Refiner",
@@ -295,11 +294,10 @@ async def _refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
     return refined_prompt
 
 
-async def _refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+async def _refine_picedit_prompt_async(prompt: str, config: CodexConfig, client: AsyncOpenAI) -> str:
     """把用户编辑意图润色成更适合图片编辑模型的提示词。"""
 
     set_tracing_disabled(True)
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
     model = OpenAIResponsesModel(model=config.model, openai_client=client)
     agent = Agent(
         name="Codex Pic Edit Prompt Refiner",
@@ -431,70 +429,76 @@ async def run_codex_pic_async(
     _write_pic_trace(trace_output_file, trace_payload)
     _log_pic_stage("pic_started", source=md_path, original_prompt=prompt)
     refine_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS)
-
-    console.print(f"[pic] 开始优化做图提示词：{md_path.name}（超时 {refine_timeout_seconds}s）...", style="cyan")
-    logger.info("开始优化做图提示词: md_path=%s model=%s timeout=%ss", md_path, config.model, refine_timeout_seconds)
-    refine_started_at = time.monotonic()
-    try:
-        refined_prompt = await asyncio.wait_for(
-            _refine_pic_prompt_async(prompt, config), timeout=refine_timeout_seconds
-        )
-    except Exception as exc:
-        trace_payload["status"] = "refine_failed"
-        trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
-        trace_payload["error"] = str(exc)
-        _write_pic_trace(trace_output_file, trace_payload)
-        logger.exception("优化做图提示词失败: md_path=%s", md_path)
-        raise
-
-    trace_payload["status"] = "refined"
-    trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
-    trace_payload["refined_prompt"] = refined_prompt
-    trace_payload["refine_token_usage"] = _token_usage_to_payload(
-        _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
-    )
-    _write_pic_trace(trace_output_file, trace_payload)
-    _log_pic_stage(
-        "pic_refined",
-        source=md_path,
-        original_prompt=prompt,
-        refined_prompt=refined_prompt,
-        elapsed_seconds=cast(float, trace_payload["refine_elapsed_seconds"]),
-        token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
-    )
     image_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS)
-    console.print(
-        f"[pic] 提示词优化完成：{md_path.name}，开始生成图片（超时 {image_timeout_seconds}s）...", style="cyan"
-    )
-    logger.info(
-        "开始生成图片: md_path=%s pic_model=%s size=%s quality=%s timeout=%ss",
-        md_path,
-        config.pic_model,
-        pic_size,
-        pic_quality,
-        image_timeout_seconds,
-    )
 
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, timeout=float(image_timeout_seconds))
-    image_started_at = time.monotonic()
-    trace_payload["image_request_started_at"] = round(time.time(), 3)
-    _write_pic_trace(trace_output_file, trace_payload)
-    try:
-        response: ImagesResponse = await client.with_options(timeout=float(image_timeout_seconds)).images.generate(
-            model=config.pic_model,
-            prompt=refined_prompt,
-            size=pic_size,
-            quality=pic_quality,
-            output_format=pic_output_format,
-            response_format=pic_response_format,
+    async with AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        timeout=float(image_timeout_seconds),
+    ) as client:
+        console.print(f"[pic] 开始优化做图提示词：{md_path.name}（超时 {refine_timeout_seconds}s）...", style="cyan")
+        logger.info(
+            "开始优化做图提示词: md_path=%s model=%s timeout=%ss", md_path, config.model, refine_timeout_seconds
         )
-    except Exception as exc:
-        trace_payload["status"] = "image_generate_failed"
-        trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
-        trace_payload["error"] = str(exc)
+        refine_started_at = time.monotonic()
+        try:
+            refined_prompt = await asyncio.wait_for(
+                _refine_pic_prompt_async(prompt, config, client), timeout=refine_timeout_seconds
+            )
+        except Exception as exc:
+            trace_payload["status"] = "refine_failed"
+            trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+            trace_payload["error"] = str(exc)
+            _write_pic_trace(trace_output_file, trace_payload)
+            logger.exception("优化做图提示词失败: md_path=%s", md_path)
+            raise
+
+        trace_payload["status"] = "refined"
+        trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+        trace_payload["refined_prompt"] = refined_prompt
+        trace_payload["refine_token_usage"] = _token_usage_to_payload(
+            _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
+        )
         _write_pic_trace(trace_output_file, trace_payload)
-        logger.exception("生成图片失败: md_path=%s", md_path)
-        raise
+        _log_pic_stage(
+            "pic_refined",
+            source=md_path,
+            original_prompt=prompt,
+            refined_prompt=refined_prompt,
+            elapsed_seconds=cast(float, trace_payload["refine_elapsed_seconds"]),
+            token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
+        )
+        console.print(
+            f"[pic] 提示词优化完成：{md_path.name}，开始生成图片（超时 {image_timeout_seconds}s）...", style="cyan"
+        )
+        logger.info(
+            "开始生成图片: md_path=%s pic_model=%s size=%s quality=%s timeout=%ss",
+            md_path,
+            config.pic_model,
+            pic_size,
+            pic_quality,
+            image_timeout_seconds,
+        )
+
+        image_started_at = time.monotonic()
+        trace_payload["image_request_started_at"] = round(time.time(), 3)
+        _write_pic_trace(trace_output_file, trace_payload)
+        try:
+            response: ImagesResponse = await client.with_options(timeout=float(image_timeout_seconds)).images.generate(
+                model=config.pic_model,
+                prompt=refined_prompt,
+                size=pic_size,
+                quality=pic_quality,
+                output_format=pic_output_format,
+                response_format=pic_response_format,
+            )
+        except Exception as exc:
+            trace_payload["status"] = "image_generate_failed"
+            trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
+            trace_payload["error"] = str(exc)
+            _write_pic_trace(trace_output_file, trace_payload)
+            logger.exception("生成图片失败: md_path=%s", md_path)
+            raise
 
     request_finished_at = time.monotonic()
     trace_payload["image_request_elapsed_seconds"] = round(request_finished_at - image_started_at, 3)
@@ -601,81 +605,88 @@ async def run_codex_picedit_async(
     _write_pic_trace(trace_output_file, trace_payload)
     _log_pic_stage("picedit_started", source=image_path, original_prompt=prompt)
     refine_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS)
-
-    console.print(f"[picedit] 开始优化改图提示词（超时 {refine_timeout_seconds}s）...", style="cyan")
-    logger.info(
-        "开始优化改图提示词: image_path=%s model=%s timeout=%ss", image_path, config.model, refine_timeout_seconds
-    )
-    refine_started_at = time.monotonic()
-    try:
-        refined_prompt = await asyncio.wait_for(
-            _refine_picedit_prompt_async(prompt, config), timeout=refine_timeout_seconds
-        )
-    except Exception as exc:
-        trace_payload["status"] = "refine_failed"
-        trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
-        trace_payload["error"] = str(exc)
-        _write_pic_trace(trace_output_file, trace_payload)
-        logger.exception("优化改图提示词失败: image_path=%s", image_path)
-        raise
-
-    trace_payload["status"] = "refined"
-    trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
-    trace_payload["refined_prompt"] = refined_prompt
-    trace_payload["refine_token_usage"] = _token_usage_to_payload(
-        _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
-    )
-    _write_pic_trace(trace_output_file, trace_payload)
-    _log_pic_stage(
-        "picedit_refined",
-        source=image_path,
-        original_prompt=prompt,
-        refined_prompt=refined_prompt,
-        elapsed_seconds=cast(float, trace_payload["refine_elapsed_seconds"]),
-        token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
-    )
     image_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS)
-    console.print(f"[picedit] 提示词优化完成，开始修改图片（超时 {image_timeout_seconds}s）...", style="cyan")
-    logger.info(
-        "开始修改图片: image_path=%s pic_model=%s size=%s quality=%s timeout=%ss",
-        image_path,
-        config.pic_model,
-        pic_size,
-        pic_quality,
-        image_timeout_seconds,
-    )
 
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url, timeout=float(image_timeout_seconds))
-    image_started_at = time.monotonic()
-    trace_payload["image_request_started_at"] = round(time.time(), 3)
-    logger.info(
-        "即将请求图片编辑接口: image_path=%s pic_model=%s size=%s quality=%s response_format=%s output_format=%s",
-        image_path,
-        config.pic_model,
-        pic_size,
-        pic_quality,
-        pic_response_format,
-        pic_output_format,
-    )
-    _write_pic_trace(trace_output_file, trace_payload)
-    try:
-        with image_path.open("rb") as image_handle:
-            response: ImagesResponse = await client.with_options(timeout=float(image_timeout_seconds)).images.edit(
-                model=config.pic_model,
-                image=image_handle,
-                prompt=refined_prompt,
-                size=pic_size,
-                quality=pic_quality,
-                output_format=pic_output_format,
-                response_format=pic_response_format,
+    async with AsyncOpenAI(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        timeout=float(image_timeout_seconds),
+    ) as client:
+        console.print(f"[picedit] 开始优化改图提示词（超时 {refine_timeout_seconds}s）...", style="cyan")
+        logger.info(
+            "开始优化改图提示词: image_path=%s model=%s timeout=%ss",
+            image_path,
+            config.model,
+            refine_timeout_seconds,
+        )
+        refine_started_at = time.monotonic()
+        try:
+            refined_prompt = await asyncio.wait_for(
+                _refine_picedit_prompt_async(prompt, config, client), timeout=refine_timeout_seconds
             )
-    except Exception as exc:
-        trace_payload["status"] = "image_edit_failed"
-        trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
-        trace_payload["error"] = str(exc)
+        except Exception as exc:
+            trace_payload["status"] = "refine_failed"
+            trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+            trace_payload["error"] = str(exc)
+            _write_pic_trace(trace_output_file, trace_payload)
+            logger.exception("优化改图提示词失败: image_path=%s", image_path)
+            raise
+
+        trace_payload["status"] = "refined"
+        trace_payload["refine_elapsed_seconds"] = round(time.monotonic() - refine_started_at, 3)
+        trace_payload["refined_prompt"] = refined_prompt
+        trace_payload["refine_token_usage"] = _token_usage_to_payload(
+            _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
+        )
         _write_pic_trace(trace_output_file, trace_payload)
-        logger.exception("修改图片失败: image_path=%s", image_path)
-        raise
+        _log_pic_stage(
+            "picedit_refined",
+            source=image_path,
+            original_prompt=prompt,
+            refined_prompt=refined_prompt,
+            elapsed_seconds=cast(float, trace_payload["refine_elapsed_seconds"]),
+            token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
+        )
+        console.print(f"[picedit] 提示词优化完成，开始修改图片（超时 {image_timeout_seconds}s）...", style="cyan")
+        logger.info(
+            "开始修改图片: image_path=%s pic_model=%s size=%s quality=%s timeout=%ss",
+            image_path,
+            config.pic_model,
+            pic_size,
+            pic_quality,
+            image_timeout_seconds,
+        )
+
+        image_started_at = time.monotonic()
+        trace_payload["image_request_started_at"] = round(time.time(), 3)
+        logger.info(
+            "即将请求图片编辑接口: image_path=%s pic_model=%s size=%s quality=%s response_format=%s output_format=%s",
+            image_path,
+            config.pic_model,
+            pic_size,
+            pic_quality,
+            pic_response_format,
+            pic_output_format,
+        )
+        _write_pic_trace(trace_output_file, trace_payload)
+        try:
+            with image_path.open("rb") as image_handle:
+                response: ImagesResponse = await client.with_options(timeout=float(image_timeout_seconds)).images.edit(
+                    model=config.pic_model,
+                    image=image_handle,
+                    prompt=refined_prompt,
+                    size=pic_size,
+                    quality=pic_quality,
+                    output_format=pic_output_format,
+                    response_format=pic_response_format,
+                )
+        except Exception as exc:
+            trace_payload["status"] = "image_edit_failed"
+            trace_payload["image_elapsed_seconds"] = round(time.monotonic() - image_started_at, 3)
+            trace_payload["error"] = str(exc)
+            _write_pic_trace(trace_output_file, trace_payload)
+            logger.exception("修改图片失败: image_path=%s", image_path)
+            raise
 
     request_finished_at = time.monotonic()
     trace_payload["image_request_elapsed_seconds"] = round(request_finished_at - image_started_at, 3)

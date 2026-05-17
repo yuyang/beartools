@@ -41,6 +41,16 @@ class _FakeStreamRunResult:
         return self.events_factory()
 
 
+class _AsyncContextFakeClient:
+    """支持 async with 的 SDK client 测试替身。"""
+
+    async def __aenter__(self) -> object:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+        del exc_type, exc, exc_tb
+
+
 def _build_fake_config(output_dir: Path) -> Config:
     """构造测试使用的最小 Codex 配置。"""
 
@@ -80,7 +90,7 @@ def _patch_runtime(
         def __init__(self, *args: object, **kwargs: object) -> None:
             del args, kwargs
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *args: object, **kwargs: object) -> None:
             del args, kwargs
 
@@ -1227,7 +1237,7 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
 
     captured: dict[str, object] = {}
 
-    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         captured["refine_prompt"] = prompt
         captured["refine_model"] = config.model
         return "保留人物主体，提亮光线并增加悬浮面板"
@@ -1247,7 +1257,7 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
                 },
             )()
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
@@ -1327,7 +1337,7 @@ def test_run_codex_picedit_excludes_b64_payload_from_trace(tmp_path: Path, monke
     image_file.write_bytes(b"source-image")
     monkeypatch.chdir(tmp_path)
 
-    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         del config
         assert prompt == "提亮并增强科技感"
         return "保留人物主体，提亮光线并增加悬浮面板"
@@ -1349,7 +1359,7 @@ def test_run_codex_picedit_excludes_b64_payload_from_trace(tmp_path: Path, monke
                 },
             )()
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             del api_key, base_url, timeout
             self.images = FakeImages()
@@ -1426,7 +1436,7 @@ def test_run_codex_picedit_strips_existing_version_suffix(tmp_path: Path, monkey
     image_file.write_bytes(b"source-image")
     monkeypatch.chdir(tmp_path)
 
-    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_picedit_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         del prompt, config
         return "优化后的改图提示词"
 
@@ -1442,7 +1452,7 @@ def test_run_codex_picedit_strips_existing_version_suffix(tmp_path: Path, monkey
                 },
             )()
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             del api_key, base_url, timeout
             self.images = FakeImages()
@@ -1485,7 +1495,7 @@ def test_run_codex_pic_uses_fixed_output_dir(
 
     captured: dict[str, object] = {}
 
-    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         captured["refine_prompt"] = prompt
         captured["refine_model"] = config.model
         return "润色后的图片提示词"
@@ -1507,7 +1517,7 @@ def test_run_codex_pic_uses_fixed_output_dir(
                 },
             )()
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
@@ -1589,7 +1599,7 @@ def test_run_codex_pic_excludes_b64_payload_from_trace(tmp_path: Path, monkeypat
     md_file.write_text("生成大图", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         del config
         assert prompt == "生成大图"
         return "润色后的大图提示词"
@@ -1618,7 +1628,7 @@ def test_run_codex_pic_excludes_b64_payload_from_trace(tmp_path: Path, monkeypat
                 },
             )()
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             del api_key, base_url, timeout
             self.images = FakeImages()
@@ -1665,7 +1675,7 @@ def test_run_codex_pic_does_not_log_before_request_and_writes_request_started_at
     monkeypatch.chdir(tmp_path)
     caplog.set_level("INFO")
 
-    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         del config
         assert prompt == "生成海报"
         return "适合出图的海报提示词"
@@ -1687,7 +1697,7 @@ def test_run_codex_pic_does_not_log_before_request_and_writes_request_started_at
                 },
             )()
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             del api_key, base_url, timeout
             self.images = FakeImages()
@@ -1743,7 +1753,7 @@ def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pyt
 
     captured: dict[str, object] = {}
 
-    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         captured["refine_prompt"] = prompt
         captured["refine_model"] = config.model
         return "更适合做图的提示词"
@@ -1760,7 +1770,7 @@ def test_run_codex_pic_prefers_explicit_options(tmp_path: Path, monkeypatch: pyt
                 },
             )()
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
             del api_key, base_url
             captured["client_timeout"] = timeout
@@ -1917,7 +1927,7 @@ def test_run_codex_pic_writes_trace_when_refine_fails(tmp_path: Path, monkeypatc
     md_file.write_text("生成失败图片", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig) -> str:
+    async def fake_refine_pic_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
         del prompt, config
         raise RuntimeError("refine boom")
 
@@ -1989,7 +1999,7 @@ def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.M
             captured["model"] = model
             captured["openai_client"] = openai_client
 
-    class FakeClient:
+    class FakeClient(_AsyncContextFakeClient):
         def __init__(self, *, api_key: str, base_url: str) -> None:
             captured["api_key"] = api_key
             captured["base_url"] = base_url
@@ -2005,12 +2015,14 @@ def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr("beartools.codex_pic.set_tracing_disabled", lambda _value: None)
     monkeypatch.setattr("beartools.codex_pic._build_refine_instructions", lambda _name: "模板里的提示词")
 
+    client = FakeClient(api_key="token", base_url="https://example.com/v1")
     refined = asyncio.run(
         _refine_pic_prompt_async(
             "原始 markdown 提示词",
             CodexConfig(
                 base_url="https://example.com/v1", api_key="token", model="grok-3-mini", pic_model="gpt-image-2"
             ),
+            client,
         )
     )
 

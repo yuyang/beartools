@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from agents import Agent, OpenAIResponsesModel, Runner, Tool, WebSearchTool, set_tracing_disabled
 from agents.items import ReasoningItem, ToolCallItem, ToolCallOutputItem
@@ -121,6 +121,37 @@ def _build_unknown_event(event: object) -> _CodexStreamEvent:
 def _serialize_event(event: _CodexStreamEvent) -> str:
     payload: dict[str, str] = {"type": event.type, "message": event.message, "display_text": event.display_text}
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _write_trace_event(trace_handle: TextIO, event: _CodexStreamEvent) -> str:
+    """写入单条 trace 事件并返回序列化内容。"""
+
+    serialized_event = _serialize_event(event)
+    trace_handle.write(serialized_event + "\n")
+    trace_handle.flush()
+    return serialized_event
+
+
+async def _consume_codex_stream(stream: RunResultStreaming, trace_handle: TextIO) -> None:
+    """消费 Codex 事件流。"""
+
+    try:
+        async for raw_event in stream.stream_events():
+            try:
+                event = _normalize_stream_event(raw_event)
+                serialized_event = _write_trace_event(trace_handle, event)
+                logger.info("Codex stream event: %s", serialized_event)
+                if event.display_text:
+                    end = "" if event.type == "response.output_text.delta" else "\n"
+                    console.print(event.display_text, end=end)
+            except Exception as exc:
+                event = _CodexStreamEvent(type="unknown_event", message=f"event_error: {exc}")
+                _write_trace_event(trace_handle, event)
+                logger.warning("Codex 单个事件处理异常，忽略并继续消费: %s", exc)
+    except Exception as exc:
+        event = _CodexStreamEvent(type="unknown_event", message=f"stream_error: {exc}")
+        _write_trace_event(trace_handle, event)
+        logger.warning("Codex 事件流记录异常，忽略并继续输出最终结果: %s", exc)
 
 
 async def _execute_shell_commands(commands: list[str], timeout_seconds: int) -> ShellResult:
@@ -282,50 +313,28 @@ async def run_codex_markdown_async(
     logger.info("开始执行 Codex: md_path=%s model=%s", md_path, config.model)
 
     set_tracing_disabled(True)
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
-    model = OpenAIResponsesModel(model=config.model, openai_client=client)
-    agent = Agent(
-        name="Codex Runner",
-        instructions=config.instructions,
-        model=model,
-        tools=_build_codex_tools(),
-    )  # type: ignore[misc]
+    async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url) as client:
+        model = OpenAIResponsesModel(model=config.model, openai_client=client)
+        agent = Agent(
+            name="Codex Runner",
+            instructions=config.instructions,
+            model=model,
+            tools=_build_codex_tools(),
+        )  # type: ignore[misc]
 
-    final_text = ""
-    with trace_output_file.open("w", encoding="utf-8") as trace_handle:
-        stream = Runner.run_streamed(agent, input=prompt)  # type: ignore[misc]
-        try:
-            async for raw_event in stream.stream_events():
-                try:
-                    event = _normalize_stream_event(raw_event)
-                    serialized_event = _serialize_event(event)
-                    trace_handle.write(serialized_event + "\n")
-                    trace_handle.flush()
-                    logger.info("Codex stream event: %s", serialized_event)
-                    if event.display_text:
-                        end = "" if event.type == "response.output_text.delta" else "\n"
-                        console.print(event.display_text, end=end)
-                except Exception as exc:
-                    event_error = _CodexStreamEvent(type="unknown_event", message=f"event_error: {exc}")
-                    serialized_event = _serialize_event(event_error)
-                    trace_handle.write(serialized_event + "\n")
-                    trace_handle.flush()
-                    logger.warning("Codex 单个事件处理异常，忽略并继续消费: %s", exc)
-        except Exception as exc:
-            stream_error_event = _CodexStreamEvent(type="unknown_event", message=f"stream_error: {exc}")
-            serialized_event = _serialize_event(stream_error_event)
-            trace_handle.write(serialized_event + "\n")
-            trace_handle.flush()
-            logger.warning("Codex 事件流记录异常，忽略并继续输出最终结果: %s", exc)
-        final_output = cast(object | None, stream.final_output)
-        if final_output is not None:
-            final_text = str(final_output)
+        final_text = ""
+        with trace_output_file.open("w", encoding="utf-8") as trace_handle:
+            stream = Runner.run_streamed(agent, input=prompt)  # type: ignore[misc]
+            await _consume_codex_stream(stream, trace_handle)
+            final_output = cast(object | None, stream.final_output)
+            if final_output is not None:
+                final_text = str(final_output)
 
-    final_output_file.write_text(final_text, encoding="utf-8")
-    logger.info("Codex 执行完成: final_output=%s trace_output=%s", final_output_file, trace_output_file)
-    return CodexRunResult(
-        final_output_file=final_output_file, trace_output_file=trace_output_file, final_text=final_text
-    )
+        final_output_file.write_text(final_text, encoding="utf-8")
+        logger.info("Codex 执行完成: final_output=%s trace_output=%s", final_output_file, trace_output_file)
+        return CodexRunResult(
+            final_output_file=final_output_file, trace_output_file=trace_output_file, final_text=final_text
+        )
 
 
 def run_codex_markdown(*, md_path: Path, output_file: Path | None, trace_file: Path | None) -> CodexRunResult:

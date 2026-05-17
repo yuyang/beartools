@@ -267,21 +267,21 @@ async def _select_novel_scenes_async(
     """调用文本模型抽取适合做图的小说场景。"""
 
     set_tracing_disabled(True)
-    client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
-    model = OpenAIResponsesModel(model=config.model, openai_client=client)
-    instructions = get_prompt_manager().render(NOVEL_SCENE_TEMPLATE_NAME, {"n": n, "source_name": source_name})
-    agent = Agent(
-        name="Codex Novel Scene Selector",
-        instructions=instructions,
-        model=model,
-        tools=[],
-    )  # type: ignore[misc]
-    result = await Runner.run(agent, input=text)  # type: ignore[misc]
-    final_output = cast(object | None, result.final_output)
-    if final_output is None:
-        raise ValueError("小说场景抽取失败：未返回结果")
-    scenes = _parse_scene_items(str(final_output))
-    return [_scene_to_payload(scene) for scene in scenes]
+    async with AsyncOpenAI(api_key=config.api_key, base_url=config.base_url) as client:
+        model = OpenAIResponsesModel(model=config.model, openai_client=client)
+        instructions = get_prompt_manager().render(NOVEL_SCENE_TEMPLATE_NAME, {"n": n, "source_name": source_name})
+        agent = Agent(
+            name="Codex Novel Scene Selector",
+            instructions=instructions,
+            model=model,
+            tools=[],
+        )  # type: ignore[misc]
+        result = await Runner.run(agent, input=text)  # type: ignore[misc]
+        final_output = cast(object | None, result.final_output)
+        if final_output is None:
+            raise ValueError("小说场景抽取失败：未返回结果")
+        scenes = _parse_scene_items(str(final_output))
+        return [_scene_to_payload(scene) for scene in scenes]
 
 
 def _build_scene_selection_input(source_text: str, request_text: str | None) -> str:
