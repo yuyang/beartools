@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from beartools.cli import app
 from beartools.commands.model.command import _print_answer, _print_progress, resolve_default_report_path
-from beartools.llm.runtime import RuntimeNode, RuntimeNodeSummary
+from beartools.llm.factory import LLMCandidate
 from beartools.model_check import (
     ALLOWED_MODEL_CHECK_CHOICES,
     DEFAULT_MODEL_CHECK_OUTPUT_DIR,
@@ -56,33 +56,24 @@ class _FakeClient:
 class _FakeLLFactory:
     clients: list[_FakeClient] = []
     requests: list[tuple[str, str]] = []
+    candidates: list[LLMCandidate] = []
+
+    def list_candidates(self, *, type: str, model_size: str) -> list[LLMCandidate]:
+        del type
+        return [candidate for candidate in self.candidates if candidate.tier == model_size]
 
     def create_client(self, *, name: str, model_size: str) -> _FakeClient:
         self.requests.append((name, model_size))
         return self.clients.pop(0)
 
 
-def _node(name: str = "small-1", model: str = "gpt-test", fingerprint: str = "fp") -> RuntimeNode:
-    return RuntimeNode(
-        name=name,
-        provider="openai",
-        base_url="https://example.com/v1",
-        model=model,
-        api_key="key",
-        extra_headers={},
-        timeout_seconds=30,
-        fingerprint=fingerprint,
-    )
-
-
-def _summary(name: str = "small-1", tier: str = "small", model: str = "gpt-test") -> RuntimeNodeSummary:
-    return RuntimeNodeSummary(
+def _candidate(name: str = "small-1", tier: str = "small", model: str = "gpt-test") -> LLMCandidate:
+    return LLMCandidate(
         name=name,
         tier=tier,
         provider="openai",
-        _model=model,
-        _base_url="https://example.com/v1",
-        _timeout_seconds=30,
+        model=model,
+        timeout_seconds=30,
     )
 
 
@@ -156,12 +147,12 @@ def test_filter_model_check_questions_by_id() -> None:
 
 def test_filter_model_check_nodes_by_name_or_model() -> None:
     nodes = [
-        _summary(name="node-a", tier="small", model="model-a"),
-        _summary(name="node-b", tier="large", model="model-b"),
+        _candidate(name="node-a", tier="small", model="model-a"),
+        _candidate(name="node-b", tier="large", model="model-b"),
     ]
 
     assert [node.name for node in filter_model_check_nodes(nodes, "node-b")] == ["node-b"]
-    assert [node._model for node in filter_model_check_nodes(nodes, "model-a")] == ["model-a"]
+    assert [node.model for node in filter_model_check_nodes(nodes, "model-a")] == ["model-a"]
 
 
 def test_format_question_prompt_requires_single_letter_output() -> None:
@@ -185,7 +176,7 @@ def test_run_model_check_for_node_summarizes_answers(monkeypatch) -> None:
         ModelCheckQuestion(id="q2", question="2+2?", options={"A": "3", "B": "4"}, answer="B"),
     ]
 
-    result = run_model_check_for_node(tier="small", node=_summary(), questions=questions)
+    result = run_model_check_for_node(tier="small", node=_candidate(), questions=questions)
 
     assert result.correct_count == 1
     assert result.total_count == 2
@@ -228,7 +219,7 @@ def test_run_model_check_for_node_reports_progress(monkeypatch) -> None:
 
     run_model_check_for_node(
         tier="small",
-        node=_summary(),
+        node=_candidate(),
         questions=questions,
         progress_callback=events.append,
         node_index=2,
@@ -246,7 +237,7 @@ def test_run_model_check_for_node_reports_progress(monkeypatch) -> None:
 def test_run_model_check_for_node_reports_answers(monkeypatch) -> None:
     fake_client = _FakeClient(["B", "A"])
     _FakeLLFactory.clients = [fake_client]
-    _FakeLLFactory.nodes = []
+    _FakeLLFactory.candidates = []
     monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
     monkeypatch.setattr("beartools.model_check.OpenAI", _FakeClient)
     questions = [
@@ -255,7 +246,7 @@ def test_run_model_check_for_node_reports_answers(monkeypatch) -> None:
     ]
     events = []
 
-    run_model_check_for_node(tier="small", node=_summary(), questions=questions, answer_callback=events.append)
+    run_model_check_for_node(tier="small", node=_candidate(), questions=questions, answer_callback=events.append)
 
     assert [event.answer.correct for event in events] == [True, False]
     assert events[0].completed_steps == 1
@@ -287,16 +278,12 @@ questions:
     fake_client = _FakeClient(["B"])
     _FakeLLFactory.clients = [fake_client]
     _FakeLLFactory.requests = []
-    nodes = [
-        _summary(name="node-a", tier="small", model="model-a"),
-        _summary(name="node-b", tier="large", model="model-b"),
+    _FakeLLFactory.candidates = [
+        _candidate(name="node-a", tier="small", model="model-a"),
+        _candidate(name="node-b", tier="large", model="model-b"),
     ]
     monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
     monkeypatch.setattr("beartools.model_check.OpenAI", _FakeClient)
-    monkeypatch.setattr(
-        "beartools.model_check.get_llm_runtime",
-        lambda: SimpleNamespace(list_models=lambda provider, tier: [node for node in nodes if node.tier == tier]),
-    )
 
     report = run_model_check(questions_path, question_id="q2", model_name="model-b")
 
@@ -307,14 +294,14 @@ questions:
     assert _FakeLLFactory.requests == [("node-b", "large")]
 
 
-def test_render_model_check_markdown_includes_summary(monkeypatch) -> None:
+def test_render_model_check_markdown_includes_candidate(monkeypatch) -> None:
     fake_client = _FakeClient(["B"])
     _FakeLLFactory.clients = [fake_client]
-    _FakeLLFactory.nodes = []
+    _FakeLLFactory.candidates = []
     monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
     monkeypatch.setattr("beartools.model_check.OpenAI", _FakeClient)
     questions = [ModelCheckQuestion(id="q1", question="1+1?", options={"A": "1", "B": "2"}, answer="B")]
-    result = run_model_check_for_node(tier="small", node=_summary(), questions=questions)
+    result = run_model_check_for_node(tier="small", node=_candidate(), questions=questions)
 
     markdown = render_model_check_markdown(SimpleNamespace(total_questions=1, results=[result], questions=questions))
 
@@ -352,7 +339,7 @@ def test_cli_progress_prints_name_model_and_base_url(monkeypatch) -> None:
     question = ModelCheckQuestion(id="q1", question="1+1?", options={"A": "1", "B": "2"}, answer="B")
     event = ModelCheckProgressEvent(
         tier="small",
-        node=_node(),
+        node=_candidate(),
         question=question,
         node_index=1,
         total_nodes=2,
@@ -374,7 +361,7 @@ def test_cli_progress_prints_name_model_and_base_url(monkeypatch) -> None:
 def test_cli_answer_prints_correct_or_wrong_result(monkeypatch) -> None:
     calls: list[str] = []
     question = ModelCheckQuestion(id="q1", question="1+1?", options={"A": "1", "B": "2"}, answer="B")
-    node = _node()
+    node = _candidate()
     monkeypatch.setattr("beartools.commands.model.command.console.print", calls.append)
 
     _print_answer(

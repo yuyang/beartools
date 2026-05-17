@@ -56,7 +56,19 @@ class _FakeLLFactory:
     requested_tiers: list[str] = []
     close_calls: list[str] = []
 
-    async def create_async_client(self, *, name: str, model_size: str) -> _FakeAsyncClient:
+    def list_candidates(self, *, type: str, model_size: str) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(
+                name=f"{model_size}-name",
+                tier=model_size,
+                provider=type if type != "any" else "openai",
+                model=f"{model_size}-model",
+                timeout_seconds=30,
+            )
+        ]
+
+    async def create_async_client(self, *, name: str, type: str, model_size: str) -> _FakeAsyncClient:
+        del type
         del name
         self.requested_tiers.append(model_size)
         return _FakeAsyncClient(self.close_calls)
@@ -264,22 +276,6 @@ def test_llm_command_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPa
     _FakeMemoryAgent.output = "命令总结"
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
-    monkeypatch.setattr(
-        memory_service,
-        "get_llm_runtime",
-        lambda: SimpleNamespace(
-            create_async_client=lambda name, tier: None,
-            list_models=lambda provider, tier: [
-                SimpleNamespace(
-                    name=f"{tier}-name",
-                    tier=tier,
-                    provider="openai",
-                    _model=f"{tier}-model",
-                    _timeout_seconds=30,
-                )
-            ],
-        ),
-    )
     monkeypatch.setattr(memory_service, "AsyncOpenAI", _FakeAsyncClient)
     monkeypatch.setattr(memory_service, "create_openai_responses_model", lambda client, **kwargs: "fake-model")
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
@@ -301,22 +297,6 @@ def test_llm_daily_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatc
     _FakeMemoryAgent.output = "日总结"
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
-    monkeypatch.setattr(
-        memory_service,
-        "get_llm_runtime",
-        lambda: SimpleNamespace(
-            create_async_client=lambda name, tier: None,
-            list_models=lambda provider, tier: [
-                SimpleNamespace(
-                    name=f"{tier}-name",
-                    tier=tier,
-                    provider="openai",
-                    _model=f"{tier}-model",
-                    _timeout_seconds=30,
-                )
-            ],
-        ),
-    )
     monkeypatch.setattr(memory_service, "AsyncOpenAI", _FakeAsyncClient)
     monkeypatch.setattr(memory_service, "create_openai_responses_model", lambda client, **kwargs: "fake-model")
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)

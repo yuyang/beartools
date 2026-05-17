@@ -92,6 +92,55 @@ test:
         assert config.agent.small[1].extra_headers == {"X-Region": "cn"}
         assert config.agent.small[1].timeout_seconds == 30
 
+    def test_reject_duplicate_agent_name_across_tiers(self) -> None:
+        self._write_config(
+            """
+agent:
+  large:
+    - name: "shared-name"
+      provider: "openai"
+      base_url: "https://large1.example.com"
+      model: "gpt-5"
+      api_key: "large-key"
+  small:
+    - name: "shared-name"
+      provider: "anthropic"
+      base_url: "https://small1.example.com"
+      model: "claude-haiku"
+      api_key: "small-key"
+"""
+        )
+
+        with pytest.raises(RuntimeError, match=r"agent candidate name 必须全局唯一: shared-name"):
+            load_config()
+
+    def test_reject_duplicate_agent_name_inside_same_tier(self) -> None:
+        self._write_config(
+            """
+agent:
+  large:
+    - name: "large-1"
+      provider: "openai"
+      base_url: "https://large1.example.com"
+      model: "gpt-5"
+      api_key: "large-key"
+  small:
+    - name: "same-name"
+      provider: "openai"
+      base_url: "https://small1.example.com"
+      model: "gpt-4o-mini"
+      api_key: "small-1-key"
+    - name: "same-name"
+      provider: "openai"
+      base_url: "https://small2.example.com"
+      model: "gpt-4.1-mini"
+      api_key: "small-2-key"
+"""
+        )
+
+        with pytest.raises(RuntimeError, match=r"agent candidate name 必须全局唯一: same-name"):
+            load_config()
+
     def test_reject_missing_large_provider(self) -> None:
         self._write_config(
             """

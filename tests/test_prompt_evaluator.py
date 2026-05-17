@@ -175,24 +175,22 @@ def test_create_eval_runner_uses_runtime_public_chain(monkeypatch: pytest.Monkey
             return None
 
     class _FakeFactory:
-        async def create_async_client(self, *, name: str, model_size: str) -> object:
+        def list_candidates(self, *, type: str, model_size: str) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(
+                    name=f"{model_size}-name",
+                    tier=model_size,
+                    provider=type if type != "any" else "openai",
+                    model=f"{model_size}-model",
+                    timeout_seconds=30,
+                )
+            ]
+
+        async def create_async_client(self, *, name: str, type: str, model_size: str) -> object:
+            del type
             requested.append((name, model_size))
             return _FakeAsyncClient()
 
-    monkeypatch.setattr(
-        "beartools.prompt.evaluator.get_llm_runtime",
-        lambda: SimpleNamespace(
-            list_models=lambda provider, tier: [
-                SimpleNamespace(
-                    name=f"{tier}-name",
-                    tier=tier,
-                    provider="openai",
-                    _model=f"{tier}-model",
-                    _timeout_seconds=30,
-                )
-            ]
-        ),
-    )
     monkeypatch.setattr("beartools.prompt.evaluator.LLFactory", _FakeFactory)
     monkeypatch.setattr("beartools.prompt.evaluator.AsyncOpenAI", _FakeAsyncClient)
     monkeypatch.setattr("beartools.prompt.evaluator.create_openai_responses_model", lambda client, **kwargs: "model")

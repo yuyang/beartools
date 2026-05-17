@@ -10,6 +10,7 @@ import pytest
 
 from beartools.commands.doctor.base import CheckRegistry, CheckResult, CheckStatus
 from beartools.commands.doctor.checks import llm as llm_check_module
+from beartools.config import AgentConfig, AgentNodeConfig, Config
 
 
 def _load_doctor_command_module():
@@ -29,6 +30,37 @@ class _FakeRuntimeNode:
     name: str
     base_url: str
     model: str
+
+
+class _FakeDoctorClient:
+    def __enter__(self) -> _FakeDoctorClient:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+        return None
+
+
+class _FakeDoctorLLFactory:
+    failures: dict[str, RuntimeError] = {}
+
+    def create_client(self, *, name: str, type: str, model_size: str) -> _FakeDoctorClient:
+        del type, model_size
+        if name in self.failures:
+            raise self.failures[name]
+        return _FakeDoctorClient()
+
+
+def _doctor_config(*, large: list[_FakeRuntimeNode], small: list[_FakeRuntimeNode]) -> Config:
+    def convert(node: _FakeRuntimeNode) -> AgentNodeConfig:
+        return AgentNodeConfig(
+            name=node.name,
+            provider="openai",
+            base_url=node.base_url,
+            model=node.model,
+            api_key="key",
+        )
+
+    return Config(agent=AgentConfig(large=[convert(node) for node in large], small=[convert(node) for node in small]))
 
 
 class TestDoctorCommand:
@@ -536,13 +568,14 @@ class TestDoctorLLMCheck:
         check_module = llm_check_module
         large_node = _FakeRuntimeNode(name="large-a", base_url="https://a.example.com/v1", model="gpt-5")
         small_node = _FakeRuntimeNode(name="small-a", base_url="https://b.example.com/v1", model="gpt-4o-mini")
+        _FakeDoctorLLFactory.failures = {}
 
         with (
             patch(
-                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
-                side_effect=[[large_node], [small_node]],
+                "beartools.commands.doctor.checks.llm.get_config",
+                return_value=_doctor_config(large=[large_node], small=[small_node]),
             ),
-            patch("beartools.commands.doctor.checks.llm._probe_node", return_value=None),
+            patch("beartools.commands.doctor.checks.llm.LLFactory", return_value=_FakeDoctorLLFactory()),
         ):
             result = await check_module.LLMCheck().run()
 
@@ -562,13 +595,14 @@ class TestDoctorLLMCheck:
         check_module = llm_check_module
         large_nodes = [_FakeRuntimeNode(name="primary", base_url="https://a.example.com/v1", model="gpt-4.1-mini")]
         small_nodes = [_FakeRuntimeNode(name="backup", base_url="https://b.example.com/v1", model="gpt-4o-mini")]
+        _FakeDoctorLLFactory.failures = {}
 
         with (
             patch(
-                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
-                side_effect=[large_nodes, small_nodes],
+                "beartools.commands.doctor.checks.llm.get_config",
+                return_value=_doctor_config(large=large_nodes, small=small_nodes),
             ),
-            patch("beartools.commands.doctor.checks.llm._probe_node", return_value=None),
+            patch("beartools.commands.doctor.checks.llm.LLFactory", return_value=_FakeDoctorLLFactory()),
         ):
             result = await check_module.LLMCheck().run()
 
@@ -586,9 +620,11 @@ class TestDoctorLLMCheck:
     async def test_initialization_error_returns_failure(self) -> None:
         check_module = llm_check_module
 
-        with patch(
-            "beartools.commands.doctor.checks.llm._collect_configured_nodes",
-            side_effect=[[], []],
+        _FakeDoctorLLFactory.failures = {}
+
+        with (
+            patch("beartools.commands.doctor.checks.llm.get_config", return_value=_doctor_config(large=[], small=[])),
+            patch("beartools.commands.doctor.checks.llm.LLFactory", return_value=_FakeDoctorLLFactory()),
         ):
             result = await check_module.LLMCheck().run()
 
@@ -601,16 +637,17 @@ class TestDoctorLLMCheck:
         check_module = llm_check_module
         large_node = _FakeRuntimeNode(name="large-a", base_url="https://a.example.com/v1", model="gpt-5")
         small_node = _FakeRuntimeNode(name="small-a", base_url="https://b.example.com/v1", model="gpt-4o-mini")
+        _FakeDoctorLLFactory.failures = {
+            "large-a": RuntimeError("没有可用的健康节点"),
+            "small-a": RuntimeError("没有可用的健康节点"),
+        }
 
         with (
             patch(
-                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
-                side_effect=[[large_node], [small_node]],
+                "beartools.commands.doctor.checks.llm.get_config",
+                return_value=_doctor_config(large=[large_node], small=[small_node]),
             ),
-            patch(
-                "beartools.commands.doctor.checks.llm._probe_node",
-                side_effect=RuntimeError("没有可用的健康节点"),
-            ),
+            patch("beartools.commands.doctor.checks.llm.LLFactory", return_value=_FakeDoctorLLFactory()),
         ):
             result = await check_module.LLMCheck().run()
 
@@ -628,16 +665,13 @@ class TestDoctorLLMCheck:
     async def test_unexpected_error_returns_failure(self) -> None:
         check_module = llm_check_module
         node = _FakeRuntimeNode(name="small-a", base_url="https://a.example.com/v1", model="gpt-4o-mini")
+        _FakeDoctorLLFactory.failures = {"small-a": RuntimeError("Error code: 429 - rate limit exceeded")}
 
         with (
             patch(
-                "beartools.commands.doctor.checks.llm._collect_configured_nodes",
-                side_effect=[[], [node]],
+                "beartools.commands.doctor.checks.llm.get_config", return_value=_doctor_config(large=[], small=[node])
             ),
-            patch(
-                "beartools.commands.doctor.checks.llm._probe_node",
-                side_effect=RuntimeError("Error code: 429 - rate limit exceeded"),
-            ),
+            patch("beartools.commands.doctor.checks.llm.LLFactory", return_value=_FakeDoctorLLFactory()),
         ):
             result = await check_module.LLMCheck().run()
 

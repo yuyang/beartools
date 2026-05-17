@@ -298,6 +298,16 @@ def _parse_agent_node_list(node_list_settings: object, path: str) -> list[AgentN
     ]
 
 
+def _validate_unique_agent_names(large: list[AgentNodeConfig], small: list[AgentNodeConfig]) -> None:
+    """校验所有 agent candidate 的 name 在全局唯一。"""
+
+    seen_names: set[str] = set()
+    for node in [*large, *small]:
+        if node.name in seen_names:
+            raise RuntimeError(f"agent candidate name 必须全局唯一: {node.name}")
+        seen_names.add(node.name)
+
+
 def _parse_agent_config(settings: _SettingsLike) -> AgentConfig:
     """解析智能体配置"""
     agent_settings = settings.get("agent")
@@ -312,6 +322,7 @@ def _parse_agent_config(settings: _SettingsLike) -> AgentConfig:
 
     large = _parse_agent_node_list(agent_dict["large"], "agent.large")
     small = _parse_agent_node_list(agent_dict["small"], "agent.small")
+    _validate_unique_agent_names(large, small)
 
     return AgentConfig(large=large, small=small)
 

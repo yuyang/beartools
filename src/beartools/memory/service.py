@@ -16,7 +16,6 @@ from pydantic_ai import Agent
 
 from beartools.llm.factory import LLFactory
 from beartools.llm.pydantic_openai import create_openai_responses_model
-from beartools.llm.runtime import get_llm_runtime
 from beartools.memory.models import CommandMemoryInput, CommandSummarizer, DailySummarizer
 from beartools.memory.prompts import build_command_memory_prompt, build_daily_summary_prompt
 
@@ -233,15 +232,15 @@ class _LLMCommandSummarizer:
 async def _summarize_command_async(memory_input: CommandMemoryInput) -> str:
     """在同一事件循环内运行命令摘要并关闭模型客户端。"""
 
-    node = get_llm_runtime().list_models("openai", "small")[0]
-    client = await LLFactory().create_async_client(name=node.name, model_size=node.tier)
+    node = LLFactory().list_candidates(type="openai", model_size="small")[0]
+    client = await LLFactory().create_async_client(name=node.name, type="openai", model_size=node.tier)
     if not isinstance(client, AsyncOpenAI):
         raise RuntimeError("命令记忆摘要当前只支持 OpenAI 兼容 client")
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node._model,
-            timeout_seconds=float(node._timeout_seconds),
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
         )
         agent: Agent[None, str] = Agent(model=model, output_type=str)
         result = await agent.run(build_command_memory_prompt(memory_input))
@@ -256,15 +255,15 @@ class _LLMDailySummarizer:
 async def _summarize_day_async(day_content: str) -> str:
     """在同一事件循环内运行日总结并关闭模型客户端。"""
 
-    node = get_llm_runtime().list_models("openai", "large")[0]
-    client = await LLFactory().create_async_client(name=node.name, model_size=node.tier)
+    node = LLFactory().list_candidates(type="openai", model_size="large")[0]
+    client = await LLFactory().create_async_client(name=node.name, type="openai", model_size=node.tier)
     if not isinstance(client, AsyncOpenAI):
         raise RuntimeError("日记忆摘要当前只支持 OpenAI 兼容 client")
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node._model,
-            timeout_seconds=float(node._timeout_seconds),
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
         )
         agent: Agent[None, str] = Agent(model=model, output_type=str)
         result = await agent.run(build_daily_summary_prompt(day_content))

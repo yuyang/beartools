@@ -12,8 +12,8 @@ from typing import Protocol, cast
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
-from beartools.llm.factory import LLFactory
-from beartools.llm.runtime import AgentTier, RuntimeNodeSummary, get_llm_runtime
+from beartools.llm.factory import LLFactory, LLMCandidate
+from beartools.llm.runtime import AgentTier
 
 DEFAULT_MODEL_CHECK_QUESTIONS_PATH = Path("check/questions.yaml")
 DEFAULT_MODEL_CHECK_OUTPUT_DIR = Path("output")
@@ -72,7 +72,7 @@ class ModelCheckNodeResult:
     """单个模型节点的评测汇总。"""
 
     tier: AgentTier
-    node: RuntimeNodeSummary
+    node: LLMCandidate
     answers: list[ModelCheckAnswer]
     duration_seconds: float
 
@@ -122,7 +122,7 @@ class ModelCheckProgressEvent:
     """模型评测进度事件。"""
 
     tier: AgentTier
-    node: RuntimeNodeSummary
+    node: LLMCandidate
     question: ModelCheckQuestion
     node_index: int
     total_nodes: int
@@ -137,7 +137,7 @@ class ModelCheckAnswerEvent:
     """模型评测单题结果事件。"""
 
     tier: AgentTier
-    node: RuntimeNodeSummary
+    node: LLMCandidate
     question: ModelCheckQuestion
     answer: ModelCheckAnswer
     node_index: int
@@ -245,14 +245,16 @@ def filter_model_check_questions(
     return filtered_questions
 
 
-def collect_model_check_nodes() -> list[RuntimeNodeSummary]:
-    """收集 runtime 当前公开可见的所有模型摘要。"""
+def collect_model_check_nodes() -> list[LLMCandidate]:
+    """收集配置中的所有模型候选。"""
 
-    runtime = get_llm_runtime()
-    return runtime.list_models("any", "large") + runtime.list_models("any", "small")
+    factory = LLFactory()
+    return factory.list_candidates(type="any", model_size="large") + factory.list_candidates(
+        type="any", model_size="small"
+    )
 
 
-def filter_model_check_nodes(nodes: list[RuntimeNodeSummary], model_name: str | None) -> list[RuntimeNodeSummary]:
+def filter_model_check_nodes(nodes: list[LLMCandidate], model_name: str | None) -> list[LLMCandidate]:
     """按模型 name 或 model 过滤节点。"""
 
     if model_name is None or not model_name.strip():
@@ -260,10 +262,10 @@ def filter_model_check_nodes(nodes: list[RuntimeNodeSummary], model_name: str | 
 
     normalized_model_name = model_name.strip()
     filtered_nodes = [
-        node for node in nodes if node.name == normalized_model_name or node._model == normalized_model_name
+        node for node in nodes if node.name == normalized_model_name or node.model == normalized_model_name
     ]
     if not filtered_nodes:
-        available_models = ", ".join(f"{node.tier}/{node.name}/{node._model}" for node in nodes)
+        available_models = ", ".join(f"{node.tier}/{node.name}/{node.model}" for node in nodes)
         raise RuntimeError(f"未找到模型: {normalized_model_name}，可用模型: {available_models}")
     return filtered_nodes
 
@@ -346,10 +348,10 @@ def parse_model_choice(raw_output: str, valid_options: set[str]) -> str | None:
     return None
 
 
-def _ask_question(client: OpenAI, node: RuntimeNodeSummary, question: ModelCheckQuestion) -> ModelCheckAnswer:
+def _ask_question(client: OpenAI, node: LLMCandidate, question: ModelCheckQuestion) -> ModelCheckAnswer:
     prompt = format_question_prompt(question)
     response = client.responses.create(
-        model=node._model,
+        model=node.model,
         input=[
             {"role": "system", "content": "你是一个严谨的选择题答题器，只输出一个选项字母。"},
             {"role": "user", "content": prompt},
@@ -376,7 +378,7 @@ def _format_error(error: BaseException) -> str:
 def run_model_check_for_node(
     *,
     tier: AgentTier,
-    node: RuntimeNodeSummary,
+    node: LLMCandidate,
     questions: list[ModelCheckQuestion],
     progress_callback: ModelCheckProgressCallback | None = None,
     answer_callback: ModelCheckAnswerCallback | None = None,
@@ -491,7 +493,7 @@ def render_model_check_markdown(report: ModelCheckReport) -> str:
     for result in report.results:
         lines.append(
             "| "
-            f"{result.tier} | {result.node.name} | {result.node._model} | "
+            f"{result.tier} | {result.node.name} | {result.node.model} | "
             f"{result.correct_count}/{result.total_count} | {result.accuracy:.2%} | "
             f"{result.error_count} | {result.duration_seconds:.2f}s |"
         )
@@ -500,7 +502,7 @@ def render_model_check_markdown(report: ModelCheckReport) -> str:
     for result in report.results:
         lines.extend(
             [
-                f"### {result.tier}/{result.node.name} ({result.node._model})",
+                f"### {result.tier}/{result.node.name} ({result.node.model})",
                 "",
                 "| Question | Expected | Predicted | Correct | Raw Output | Error |",
                 "| --- | --- | --- | --- | --- | --- |",

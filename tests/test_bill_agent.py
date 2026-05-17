@@ -18,6 +18,19 @@ class _FakeClosableClient:
         self.close_calls += 1
 
 
+class _FakeBillFactory:
+    def list_candidates(self, *, type: str, model_size: str) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(
+                name="primary",
+                tier=model_size,
+                provider=type if type != "any" else "openai",
+                model="fake-model",
+                timeout_seconds=30,
+            )
+        ]
+
+
 def test_resolve_bill_structure_returns_first_file_result() -> None:
     from beartools.bill.agent import resolve_bill_structure
     from beartools.bill.models import (
@@ -54,23 +67,8 @@ def test_resolve_bill_structure_returns_first_file_result() -> None:
         async def run(self, _prompt: str) -> _FakeRunResult:
             return _FakeRunResult(output=type("_Output", (), {"files": [expected]})())
 
-    @dataclass(frozen=True)
-    class _RuntimeNode:
-        name: str
-        model: str = "fake-model"
-        timeout_seconds: int = 30
-
-    class _FakeRuntime:
-        available_nodes = [_RuntimeNode("primary")]
-
-        def get_active_node(self) -> _RuntimeNode:
-            return self.available_nodes[0]
-
-        def mark_node_failed(self, node: _RuntimeNode, error: BaseException | None = None) -> bool:
-            return False
-
     with (
-        patch("beartools.bill.agent.get_llm_runtime", return_value=_FakeRuntime()),
+        patch("beartools.bill.agent.LLFactory", return_value=_FakeBillFactory()),
         patch("beartools.bill.agent._create_openai_client", return_value=_FakeClosableClient()),
         patch("beartools.bill.agent.create_openai_responses_model", return_value="fake-model"),
         patch("beartools.bill.agent.Agent", _FakeAgent),
@@ -84,7 +82,7 @@ def test_create_openai_client_rejects_non_openai_client() -> None:
     from beartools.bill.agent import _create_openai_client
 
     class _FakeFactory:
-        async def create_async_client(self, *, name: str, model_size: str) -> object:
+        async def create_async_client(self, *, name: str, type: str, model_size: str) -> object:
             return object()
 
     with patch("beartools.bill.agent.LLFactory", return_value=_FakeFactory()):
@@ -154,10 +152,8 @@ def test_resolve_bill_structure_marks_failed_node_and_raises_current_error() -> 
                 raise TimeoutError("timed out")
             return _FakeRunResult(output=type("_Output", (), {"files": [expected]})())
 
-    runtime = _FakeRuntime()
-
     with (
-        patch("beartools.bill.agent.get_llm_runtime", return_value=runtime),
+        patch("beartools.bill.agent.LLFactory", return_value=_FakeBillFactory()),
         patch("beartools.bill.agent._create_openai_client", return_value=_FakeClosableClient()) as mock_create,
         patch("beartools.bill.agent.create_openai_responses_model", return_value="model-primary"),
         patch("beartools.bill.agent.Agent", _FakeAgent),
@@ -169,7 +165,6 @@ def test_resolve_bill_structure_marks_failed_node_and_raises_current_error() -> 
         else:
             raise AssertionError("预期抛出 TimeoutError")
 
-    assert runtime.marked == []
     assert mock_create.call_count == 1
 
 
@@ -235,10 +230,8 @@ def test_resolve_bill_structure_next_request_uses_reselected_node() -> None:
                 raise TimeoutError("timed out")
             return _FakeRunResult(output=type("_Output", (), {"files": [expected]})())
 
-    runtime = _FakeRuntime()
-
     with (
-        patch("beartools.bill.agent.get_llm_runtime", return_value=runtime),
+        patch("beartools.bill.agent.LLFactory", return_value=_FakeBillFactory()),
         patch(
             "beartools.bill.agent._create_openai_client",
             side_effect=[_FakeClosableClient(), _FakeClosableClient()],
@@ -259,7 +252,6 @@ def test_resolve_bill_structure_next_request_uses_reselected_node() -> None:
         result = resolve_bill_structure(preview)
 
     assert result == expected
-    assert runtime.marked == []
     assert mock_create.call_count == 2
 
 
@@ -292,11 +284,10 @@ def test_resolve_bill_structure_raises_without_failover() -> None:
         async def run(self, _prompt: str) -> object:
             raise RuntimeError("bad request")
 
-    runtime = _FakeRuntime()
     preview = BillPreview(file_name="wechat.xlsx", file_type="xlsx", file_content="1: 标题")
 
     with (
-        patch("beartools.bill.agent.get_llm_runtime", return_value=runtime),
+        patch("beartools.bill.agent.LLFactory", return_value=_FakeBillFactory()),
         patch("beartools.bill.agent._create_openai_client", return_value=_FakeClosableClient()) as mock_create,
         patch("beartools.bill.agent.create_openai_responses_model", return_value="model-primary"),
         patch("beartools.bill.agent.Agent", _FakeAgent),
@@ -308,7 +299,6 @@ def test_resolve_bill_structure_raises_without_failover() -> None:
         else:
             raise AssertionError("预期抛出 RuntimeError")
 
-    runtime.mark_node_failed.assert_not_called()
     assert mock_create.call_count == 1
 
 
@@ -335,12 +325,11 @@ def test_resolve_part_refund_amount_returns_structured_result() -> None:
             return _FakeRunResult(output=PartRefundAmountResult(refund_amount="1.00", reason="命中状态文本"))
 
     with (
-        patch("beartools.bill.agent.get_llm_runtime") as mock_runtime,
+        patch("beartools.bill.agent.LLFactory", return_value=_FakeBillFactory()),
         patch("beartools.bill.agent._create_openai_client", return_value=_FakeClosableClient()),
         patch("beartools.bill.agent.create_openai_responses_model", return_value="fake-model"),
         patch("beartools.bill.agent.Agent", _FakeAgent),
     ):
-        mock_runtime.return_value.get_active_node.return_value = SimpleNamespace(model="fake-model", timeout_seconds=30)
         result = resolve_part_refund_amount(
             counterparty="测试商户",
             remark="状态显示已退款￥1.00",
@@ -396,7 +385,7 @@ def test_analyze_bill_row_returns_correct_result() -> None:
 
     with (
         patch("beartools.bill.agent.get_prompt_manager", return_value=_FakePromptManager()),
-        patch("beartools.bill.agent.get_llm_runtime", return_value=_FakeRuntime()),
+        patch("beartools.bill.agent.LLFactory", return_value=_FakeBillFactory()),
         patch("beartools.bill.agent._create_openai_client", return_value=_FakeClosableClient()),
         patch("beartools.bill.agent.create_openai_responses_model", return_value="fake-model"),
         patch("beartools.bill.agent.Agent", _FakeAgent),
@@ -441,7 +430,7 @@ def test_analyze_bill_row_propagates_exception() -> None:
 
     with (
         patch("beartools.bill.agent.get_prompt_manager", return_value=_FakePromptManager()),
-        patch("beartools.bill.agent.get_llm_runtime", return_value=_FakeRuntime()),
+        patch("beartools.bill.agent.LLFactory", return_value=_FakeBillFactory()),
         patch("beartools.bill.agent._create_openai_client", return_value=_FakeClosableClient()),
         patch("beartools.bill.agent.create_openai_responses_model", return_value="fake-model"),
         patch("beartools.bill.agent.Agent", _FakeAgent),

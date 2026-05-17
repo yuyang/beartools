@@ -21,40 +21,25 @@ from openai import AsyncOpenAI
 from pydantic_ai import Agent
 
 from beartools.config import GmailConfig, get_config
-from beartools.llm.factory import LLFactory
+from beartools.llm.factory import LLFactory, LLMCandidate
 from beartools.llm.pydantic_openai import create_openai_responses_model
-from beartools.llm.runtime import RuntimeNodeSummary, get_llm_runtime
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"]
 EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ProgressCallback = Callable[[str], None]
 
 
-class _LegacyModelNodeProtocol(Protocol):
-    model: str
-    timeout_seconds: int
-
-
-async def _create_openai_summary_client() -> tuple[RuntimeNodeSummary, AsyncOpenAI]:
+async def _create_openai_summary_client() -> tuple[LLMCandidate, AsyncOpenAI]:
     """创建 Gmail 摘要用 OpenAI client。"""
 
-    node = get_llm_runtime().list_models("openai", "small")[0]
-    client = await LLFactory().create_async_client(name=node.name, model_size=node.tier)
+    candidates = LLFactory().list_candidates(type="openai", model_size="small")
+    if not candidates:
+        raise RuntimeError("Gmail 摘要当前没有可用的 OpenAI 模型")
+    node = candidates[0]
+    client = await LLFactory().create_async_client(name=node.name, type="openai", model_size=node.tier)
     if not isinstance(client, AsyncOpenAI):
         raise RuntimeError("Gmail 摘要当前只支持 OpenAI 兼容 client")
     return node, client
-
-
-def _resolve_model_name(node: RuntimeNodeSummary | object) -> str:
-    if isinstance(node, RuntimeNodeSummary):
-        return node._model
-    return cast(_LegacyModelNodeProtocol, node).model
-
-
-def _resolve_timeout_seconds(node: RuntimeNodeSummary | object) -> float:
-    if isinstance(node, RuntimeNodeSummary):
-        return float(node._timeout_seconds)
-    return float(cast(_LegacyModelNodeProtocol, node).timeout_seconds)
 
 
 async def _summarize_messages_async(prompt: str) -> str:
@@ -64,8 +49,8 @@ async def _summarize_messages_async(prompt: str) -> str:
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=_resolve_model_name(node),
-            timeout_seconds=_resolve_timeout_seconds(node),
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
         )
         summary_agent: Agent[None, str] = Agent(model=model, output_type=str)
         summary_result = await summary_agent.run(prompt)

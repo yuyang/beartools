@@ -40,7 +40,7 @@ def _print_report(report: ModelCheckReport) -> None:
         table.add_row(
             result.tier,
             result.node.name,
-            result.node._model,
+            result.node.model,
             f"{result.correct_count}/{result.total_count}",
             f"{result.accuracy:.2%}",
             str(result.error_count),

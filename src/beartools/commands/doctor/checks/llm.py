@@ -6,19 +6,16 @@
 from __future__ import annotations
 
 import time
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol
 
 from beartools.commands.doctor.base import BaseCheck, CheckResult, CheckStatus, register_check
-from beartools.llm.runtime import (
-    RuntimeNode,
-    _collect_configured_nodes,
-    _probe_node,
-)
+from beartools.config import get_config
+from beartools.llm.factory import LLFactory
 
 type _AgentTier = Literal["large", "small"]
 
 
-class _DoctorRuntimeNode(Protocol):
+class _DoctorAgentNode(Protocol):
     @property
     def name(self) -> str: ...
 
@@ -32,9 +29,9 @@ class _DoctorRuntimeNode(Protocol):
 def _build_tier_summary(
     *,
     tiers: tuple[_AgentTier, _AgentTier],
-    healthy_nodes: list[tuple[_AgentTier, _DoctorRuntimeNode]],
+    healthy_nodes: list[tuple[_AgentTier, _DoctorAgentNode]],
     failed_nodes: list[tuple[_AgentTier, str]],
-    tier_configured_nodes: dict[_AgentTier, list[_DoctorRuntimeNode]],
+    tier_configured_nodes: dict[_AgentTier, list[_DoctorAgentNode]],
 ) -> str:
     parts: list[str] = []
     for tier in tiers:
@@ -47,18 +44,20 @@ def _build_tier_summary(
 def _probe_tier_nodes(
     *,
     tiers: tuple[_AgentTier, _AgentTier],
-    tier_configured_nodes: dict[_AgentTier, list[_DoctorRuntimeNode]],
-) -> tuple[list[tuple[_AgentTier, _DoctorRuntimeNode]], list[tuple[_AgentTier, str]]]:
-    healthy_nodes: list[tuple[_AgentTier, _DoctorRuntimeNode]] = []
+    tier_configured_nodes: dict[_AgentTier, list[_DoctorAgentNode]],
+) -> tuple[list[tuple[_AgentTier, _DoctorAgentNode]], list[tuple[_AgentTier, str]]]:
+    healthy_nodes: list[tuple[_AgentTier, _DoctorAgentNode]] = []
     failed_nodes: list[tuple[_AgentTier, str]] = []
 
     for tier in tiers:
         configured_nodes = tier_configured_nodes[tier]
         for node in configured_nodes:
             try:
-                _probe_node(cast(RuntimeNode, node))
+                client = LLFactory().create_client(name=node.name, type="any", model_size=tier)
+                with client:
+                    pass
                 healthy_nodes.append((tier, node))
-            except Exception as exc:
+            except (ConnectionError, OSError, RuntimeError, TimeoutError) as exc:
                 reason = f"{node.name}({node.base_url}, {node.model}): {str(exc)}"
                 failed_nodes.append((tier, reason))
 
@@ -68,7 +67,7 @@ def _probe_tier_nodes(
 def _build_detail_lines(
     *,
     tiers: tuple[_AgentTier, _AgentTier],
-    healthy_nodes: list[tuple[_AgentTier, _DoctorRuntimeNode]],
+    healthy_nodes: list[tuple[_AgentTier, _DoctorAgentNode]],
     failed_nodes: list[tuple[_AgentTier, str]],
 ) -> list[str]:
     detail_lines: list[str] = [f"汇总：可用 {len(healthy_nodes)}，不可用 {len(failed_nodes)}"]
@@ -106,10 +105,11 @@ class LLMCheck(BaseCheck):
         """执行 LLM 健康检查。"""
         start_time = time.time()
         tiers: tuple[_AgentTier, _AgentTier] = ("large", "small")
-        tier_configured_nodes = cast(
-            dict[_AgentTier, list[_DoctorRuntimeNode]],
-            {tier: _collect_configured_nodes(tier) for tier in tiers},
-        )
+        agent_config = get_config().agent
+        tier_configured_nodes: dict[_AgentTier, list[_DoctorAgentNode]] = {
+            "large": list(agent_config.large),
+            "small": list(agent_config.small),
+        }
 
         if not any(tier_configured_nodes.values()):
             return CheckResult(

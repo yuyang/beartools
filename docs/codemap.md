@@ -86,14 +86,14 @@ beartools = "beartools.cli:_main_wrapper"
 ### LLM 与 Prompt
 
 - `llm/runtime.py`
-  - 将配置中的 agent 节点转换为运行时节点池。
-  - 对 `small`、`large` 两个 tier 做健康探测、去重、故障标记和轮换。
+  - 保留为 LLM 底层运行时工具，负责 `RuntimeNode`、同步/异步 SDK client 探活和探活响应校验；不再维护 `LLRuntime` 节点池、活动节点或 SDK client 构建。
   - `openai` 节点使用 OpenAI Responses API 探测；`anthropic` 节点使用 Anthropic Messages API 探测。
-  - 对外公开 `RuntimeNodeSummary(name, tier, provider)`、`LLRuntime.list_models()`、`LLRuntime.create_client()`、`LLRuntime.create_async_client()`。
-  - `RuntimeNode` 仍持有敏感配置与探测细节，但不再作为推荐公开调用契约。
+  - `RuntimeNode` 仍持有 `base_url`、`api_key`、`extra_headers`、`fingerprint` 等敏感配置，不作为业务模块调用契约；探活函数接收已经创建好的 SDK client 和 model。
 - `llm/factory.py`
-  - 保留为轻量公开入口，内部委托 `LLRuntime` 选择节点并构建 SDK client。
-  - `LLFactory.create_client()` / `create_async_client()` 支持 `type=openai|anthropic|any`，并按 `model_size=small|large` 选择节点；`model` 同时匹配节点 `name` 和内部真实 model。
+  - 是业务模块统一公开入口，直接读取 agent 配置，逐个配置构造 SDK client，探活成功后返回同一个 client。
+  - `LLFactory.list_candidates(type=..., model_size=...)` 返回指定 tier/provider 的所有配置候选，不做探活，不暴露 `base_url`、`api_key`、`extra_headers`。
+  - `LLFactory.create_client()` / `create_async_client()` 支持 `type=openai|anthropic|any`，并按 `model_size=small|large` 选择节点；指定 `name` 时只创建并探活该节点 client，未指定 `name` 时按配置顺序创建 client、探活并返回第一个成功 client。
+  - `LLFactory.create_client()` / `create_async_client()` 不支持 `model` 参数；配置候选 `name` 是唯一主键。
   - 不再暴露 `create_client_for_node()` / `create_async_client_for_node()`。
   - client 的关闭仍由调用方负责。
 - `llm/pydantic_openai.py`
@@ -101,7 +101,7 @@ beartools = "beartools.cli:_main_wrapper"
 - `model_check.py`
   - 读取 `check/questions.yaml` 或指定 YAML/JSON 题库。
   - 支持用 `--id` 只测试指定题目 ID，用 `--model-name` / `-m` 只测试匹配的节点 name 或 model。
-  - 通过 `LLRuntime.list_models()` 收集 small/large 可用模型摘要，再通过 `LLFactory.create_client(name=..., model_size=...)` 获取 OpenAI 兼容 client，逐题调用 Responses API。
+  - 通过 `LLFactory.list_candidates()` 收集 small/large 配置候选，再通过 `LLFactory.create_client(name=..., model_size=...)` 获取 OpenAI 兼容 client，逐题调用 Responses API。
   - 只接受 `A` 到 `Z` 的单字母选择题答案，模型输出解释、标点或包装文本时判错。
   - 对外提供题库加载、进度与单题结果事件回调、单节点评测、完整评测和 Markdown 报告渲染。
 - `prompt/template.py`
@@ -117,7 +117,7 @@ beartools = "beartools.cli:_main_wrapper"
   - 读取用户显式指定的 eval YAML，格式为 `cases[].id`、`cases[].prompt`、`cases[].params`、`cases[].expect.json`。
   - 第一版只支持 `prompts/*.md` 模板，不支持代码内动态 prompt。
   - 模型输出必须是纯 JSON 对象，不自动剥离 Markdown 代码块或解释文字；`expect.json` 使用精确子集匹配。
-  - `check eval` 必须显式传 `--tier small|large`，并通过 `LLRuntime.list_models("openai", tier)` + `LLFactory().create_async_client(name=..., model_size=...)` 创建模型。
+  - `check eval` 必须显式传 `--tier small|large`，并通过 `LLFactory.list_candidates("openai", tier)` + `LLFactory().create_async_client(name=..., model_size=...)` 创建模型。
 
 ### CLI 记忆
 
@@ -264,7 +264,7 @@ beartools check eval <yaml_path> --tier small|large
   -> prompt/evaluator.py::load_prompt_eval_cases()
        -> prompt/manager.py 校验 prompt 模板存在并渲染 params
   -> prompt/evaluator.py::run_prompt_eval()
-       -> LLFactory().create(tier=...)
+       -> LLFactory().create_async_client(type="openai", model_size=tier)
        -> Pydantic AI Agent.run_sync()
        -> 解析纯 JSON 并做 expect.json 子集匹配
 ```
@@ -285,8 +285,8 @@ beartools check eval <yaml_path> --tier small|large
 | `tests/test_prompt_checker.py` | Prompt 静态资产收集、规则检查和示例 eval YAML 存在性 |
 | `tests/test_prompt_evaluator.py` | Prompt eval YAML 解析、纯 JSON 判定、子集匹配、失败继续汇总 |
 | `tests/test_prompt_command.py` | Prompt CLI 注册、check/eval 命令、缺失 YAML 和 tier 参数 |
-| `tests/test_llm_runtime.py` | LLM 节点池、探测、故障切换 |
-| `tests/test_agent_factory.py` | LLM factory 和 provider/model 创建 |
+| `tests/test_llm_runtime.py` | RuntimeNode 构造、同步/异步 SDK client 探测协议 |
+| `tests/test_agent_factory.py` | LLM factory 候选列表、provider/tier 选择和探活 fallback |
 | `tests/test_model_check.py` | 模型选择题评测、严格答案解析、报告渲染和 CLI 注册 |
 | `tests/test_bill_service.py` | 账单归一化、分析、流水线 |
 | `tests/test_bill_agent.py` | 账单 LLM agent 结构化输出 |

@@ -5,6 +5,4 @@
 
 from __future__ import annotations
 
-from .runtime import LLRuntime  # re-export 类型占位
-
-__all__ = ["LLRuntime"]
+__all__: list[str] = []

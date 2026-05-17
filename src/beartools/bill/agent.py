@@ -7,9 +7,8 @@ import asyncio
 from openai import AsyncOpenAI
 from pydantic_ai import Agent
 
-from beartools.llm.factory import LLFactory
+from beartools.llm.factory import LLFactory, LLMCandidate
 from beartools.llm.pydantic_openai import create_openai_responses_model
-from beartools.llm.runtime import RuntimeNodeSummary, get_llm_runtime
 from beartools.prompt import get_prompt_manager
 
 from .calculate_tool import calculate_expression
@@ -22,28 +21,17 @@ from .models import (
 )
 
 
-def _first_openai_summary() -> RuntimeNodeSummary:
-    runtime = get_llm_runtime()
-    if hasattr(runtime, "list_models"):
-        summaries = runtime.list_models("openai", "small")
-        if not summaries:
-            raise RuntimeError("bill 当前没有可用的 OpenAI 模型")
-        return summaries[0]
-    legacy_node = runtime.get_active_node()
-    return RuntimeNodeSummary(
-        name=legacy_node.name,
-        tier="small",
-        provider="openai",
-        _model=legacy_node.model,
-        _base_url="",
-        _timeout_seconds=legacy_node.timeout_seconds,
-    )
+def _first_openai_candidate() -> LLMCandidate:
+    candidates = LLFactory().list_candidates(type="openai", model_size="small")
+    if not candidates:
+        raise RuntimeError("bill 当前没有可用的 OpenAI 模型")
+    return candidates[0]
 
 
-async def _create_openai_client(node: RuntimeNodeSummary) -> AsyncOpenAI:
+async def _create_openai_client(node: LLMCandidate) -> AsyncOpenAI:
     """由账单调用方获取 OpenAI 兼容 SDK client。"""
 
-    client = await LLFactory().create_async_client(name=node.name, model_size=node.tier)
+    client = await LLFactory().create_async_client(name=node.name, type="openai", model_size=node.tier)
     if not isinstance(client, AsyncOpenAI):
         raise RuntimeError("bill 当前只支持 OpenAI 兼容 client")
     return client
@@ -66,13 +54,13 @@ def resolve_bill_structure(preview: BillPreview) -> BillStructureFileResult:
 async def _resolve_bill_structure_async(prompt: str) -> BillStructureFileResult:
     """异步调用 LLM 识别单个账单文件结构。"""
 
-    node = _first_openai_summary()
+    node = _first_openai_candidate()
     client = await _create_openai_client(node)
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node._model,
-            timeout_seconds=float(node._timeout_seconds),
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
         )
         agent: Agent[None, BillStructureResult] = Agent(
             model,
@@ -104,19 +92,19 @@ def analyze_bill_row(
             "amount": amount,
         },
     )
-    node = _first_openai_summary()
+    node = _first_openai_candidate()
     return asyncio.run(_analyze_bill_row_async(node, prompt))
 
 
-async def _analyze_bill_row_async(node: RuntimeNodeSummary, prompt: str) -> BillAnalysisResult:
+async def _analyze_bill_row_async(node: LLMCandidate, prompt: str) -> BillAnalysisResult:
     """异步调用 LLM 分析单行账单。"""
 
     client = await _create_openai_client(node)
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node._model,
-            timeout_seconds=float(node._timeout_seconds),
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
         )
         agent: Agent[None, BillAnalysisResult] = Agent(
             model,
@@ -149,19 +137,19 @@ def resolve_part_refund_amount(
             "transaction_time": transaction_time,
         },
     )
-    node = _first_openai_summary()
+    node = _first_openai_candidate()
     return asyncio.run(_resolve_part_refund_amount_async(node, prompt))
 
 
-async def _resolve_part_refund_amount_async(node: RuntimeNodeSummary, prompt: str) -> PartRefundAmountResult:
+async def _resolve_part_refund_amount_async(node: LLMCandidate, prompt: str) -> PartRefundAmountResult:
     """异步调用 LLM 修正部分退款金额。"""
 
     client = await _create_openai_client(node)
     async with client:
         model = create_openai_responses_model(
             client,
-            model_name=node._model,
-            timeout_seconds=float(node._timeout_seconds),
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
         )
         agent: Agent[None, PartRefundAmountResult] = Agent(
             model,
