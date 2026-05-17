@@ -48,6 +48,29 @@ def test_wrapper_records_doctor_console_output_to_day_memory(tmp_path: Path) -> 
     assert "检查总览" in day_text
 
 
+def test_wrapper_records_help_command_without_llm_summary(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["BEARTOOLS_MEMORY_ROOT"] = str(tmp_path)
+    env["BEARTOOLS_MEMORY_FAKE_SUMMARY"] = "fake llm summary should not appear"
+    env["BEARTOOLS_MEMORY_NOW"] = "2026-05-13T09:30:00"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "beartools.cli", "doctor", "--help"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "Usage: beartools doctor" in result.stdout
+    day_text = (tmp_path / "day" / "2026-05-13.md").read_text(encoding="utf-8")
+    assert "## 09:30:00 beartools doctor --help" in day_text
+    assert "已输出帮助信息：运行环境健康检查" in day_text
+    assert "fake llm summary should not appear" not in day_text
+
+
 def test_wrapper_records_diary_command_itself(tmp_path: Path) -> None:
     day_dir = tmp_path / "day"
     day_dir.mkdir(parents=True)

@@ -105,6 +105,26 @@ def test_append_command_memory_creates_day_file_and_uses_small_summary(tmp_path:
     assert summarizer.calls[0].stdout == "doctor ok"
 
 
+def test_append_command_memory_uses_help_summary_without_llm_for_help_command(tmp_path: Path) -> None:
+    summarizer = _FakeCommandSummarizer()
+    memory_input = CommandMemoryInput(
+        command="beartools doctor --help",
+        help_text="运行环境健康检查",
+        stdout="Usage: doctor [OPTIONS]\n\n运行环境健康检查\n",
+        stderr="",
+        exit_code=0,
+        started_at=datetime(2026, 5, 13, 9, 30, 0),
+        duration_seconds=0.1,
+    )
+
+    output_path = append_command_memory(memory_root=tmp_path, memory_input=memory_input, summarizer=summarizer)
+
+    text = output_path.read_text(encoding="utf-8")
+    assert "- 目的：查看 beartools 命令帮助" in text
+    assert "- 结果：已输出帮助信息：运行环境健康检查" in text
+    assert summarizer.calls == []
+
+
 def test_append_command_memory_strips_ansi_escape_from_console_output(tmp_path: Path) -> None:
     summarizer = _FakeCommandSummarizer()
     memory_input = CommandMemoryInput(

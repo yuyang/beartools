@@ -9,6 +9,7 @@ from datetime import date, timedelta
 import os
 from pathlib import Path
 import re
+import shlex
 
 from openai import AsyncOpenAI
 from pydantic_ai import Agent
@@ -59,11 +60,14 @@ def append_command_memory(
     )
     day_path = memory_root / "day" / f"{safe_input.started_at.date().isoformat()}.md"
     day_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        summary = summarizer.summarize_command(safe_input).strip()
-    except Exception as exc:
-        # 摘要模型失败不能影响原命令结果；这里保留 fallback 记忆。
-        summary = f"- 目的：记录 beartools 命令执行\n- 结果：LLM 总结失败：{exc}"
+    if _is_help_command(safe_input.command):
+        summary = _build_help_command_summary(safe_input.help_text)
+    else:
+        try:
+            summary = summarizer.summarize_command(safe_input).strip()
+        except Exception as exc:
+            # 摘要模型失败不能影响原命令结果；这里保留 fallback 记忆。
+            summary = f"- 目的：记录 beartools 命令执行\n- 结果：LLM 总结失败：{exc}"
 
     entry = "\n".join(
         [
@@ -186,6 +190,23 @@ def _first_line(text: str) -> str:
         if stripped:
             return stripped
     return "无"
+
+
+def _is_help_command(command: str) -> bool:
+    """判断命令是否在请求帮助信息。"""
+
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        args = command.split()
+    return "--help" in args or "-h" in args
+
+
+def _build_help_command_summary(help_text: str) -> str:
+    """直接用 help 信息生成单次命令摘要，避免额外请求模型。"""
+
+    help_summary = _first_line(help_text)
+    return f"- 目的：查看 beartools 命令帮助\n- 结果：已输出帮助信息：{help_summary}"
 
 
 class _StaticCommandSummarizer:
