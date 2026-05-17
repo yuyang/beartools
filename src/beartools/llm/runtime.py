@@ -79,12 +79,6 @@ class LLRuntime:
         }
 
     @property
-    def healthy_nodes(self) -> list[RuntimeNode]:
-        """兼容旧接口，默认返回 small 节点池。"""
-
-        return self.small_nodes
-
-    @property
     def available_nodes(self) -> list[RuntimeNode]:
         """兼容旧接口，默认返回 small 可用节点池。"""
 
