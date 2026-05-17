@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, cast, runtime_checkable
 
+from openai import AsyncOpenAI
 from pydantic_ai import Agent
 import yaml
 
 from beartools.llm.factory import LLFactory
-from beartools.llm.runtime import AgentTier
+from beartools.llm.pydantic_openai import create_openai_responses_model
+from beartools.llm.runtime import AgentTier, get_openai_compatible_node
 from beartools.prompt import PromptManager, TemplateNotFoundError
 
 
@@ -24,6 +27,30 @@ class PromptEvalRunner(Protocol):
     """Prompt eval 运行器协议。"""
 
     def run_sync(self, prompt: str) -> object: ...
+
+
+@runtime_checkable
+class _ClosableRunner(Protocol):
+    def close(self) -> None:
+        """关闭 runner 持有的资源。"""
+
+
+class _PydanticPromptEvalRunner:
+    """持有 PydanticAI Agent 和底层 OpenAI client 的真实 eval runner。"""
+
+    def __init__(self, *, client: AsyncOpenAI, agent: PromptEvalRunner) -> None:
+        self._client = client
+        self._agent = agent
+
+    def run_sync(self, prompt: str) -> object:
+        """同步运行 eval prompt。"""
+
+        return self._agent.run_sync(prompt)
+
+    def close(self) -> None:
+        """关闭底层 SDK client。"""
+
+        asyncio.run(self._client.__aexit__(None, None, None))
 
 
 class _RunResultWithOutput(Protocol):
@@ -162,7 +189,18 @@ def _matches_expected_subset(actual: object, expected: object) -> bool:
 def create_eval_runner(tier: AgentTier) -> PromptEvalRunner:
     """创建真实 Prompt eval 运行器。"""
 
-    return cast(PromptEvalRunner, Agent(model=LLFactory().create(tier=tier), output_type=str))
+    node = get_openai_compatible_node(tier)
+    client = asyncio.run(LLFactory().create_async_client_for_node(node))
+    if not isinstance(client, AsyncOpenAI):
+        raise RuntimeError("Prompt eval 当前只支持 OpenAI 兼容 client")
+    asyncio.run(client.__aenter__())
+    model = create_openai_responses_model(
+        client,
+        model_name=node.model,
+        timeout_seconds=float(node.timeout_seconds),
+    )
+    agent: Agent[None, str] = Agent(model=model, output_type=str)
+    return _PydanticPromptEvalRunner(client=client, agent=agent)
 
 
 def _extract_result_output(result: object) -> str:
@@ -183,27 +221,31 @@ def run_prompt_eval(
 
     resolved_manager = manager or PromptManager()
     resolved_runner_factory = runner_factory or create_eval_runner
-    runner = resolved_runner_factory(tier)
     results: list[PromptEvalCaseResult] = []
+    runner = resolved_runner_factory(tier)
 
-    for case in cases:
-        prompt = resolved_manager.render(case.prompt, case.params)
-        raw_output = ""
-        try:
-            raw_output = _extract_result_output(runner.run_sync(prompt))
-            parsed_output = extract_pure_json_object(raw_output)
-            if not _matches_expected_subset(parsed_output, case.expect.json):
-                results.append(
-                    PromptEvalCaseResult(
-                        case=case,
-                        passed=False,
-                        raw_output=raw_output,
-                        error=f"JSON 输出不匹配，期望子集: {case.expect.json}",
+    try:
+        for case in cases:
+            prompt = resolved_manager.render(case.prompt, case.params)
+            raw_output = ""
+            try:
+                raw_output = _extract_result_output(runner.run_sync(prompt))
+                parsed_output = extract_pure_json_object(raw_output)
+                if not _matches_expected_subset(parsed_output, case.expect.json):
+                    results.append(
+                        PromptEvalCaseResult(
+                            case=case,
+                            passed=False,
+                            raw_output=raw_output,
+                            error=f"JSON 输出不匹配，期望子集: {case.expect.json}",
+                        )
                     )
-                )
-                continue
-            results.append(PromptEvalCaseResult(case=case, passed=True, raw_output=raw_output))
-        except (ValueError, RuntimeError) as exc:
-            results.append(PromptEvalCaseResult(case=case, passed=False, raw_output=raw_output, error=str(exc)))
+                    continue
+                results.append(PromptEvalCaseResult(case=case, passed=True, raw_output=raw_output))
+            except (ValueError, RuntimeError) as exc:
+                results.append(PromptEvalCaseResult(case=case, passed=False, raw_output=raw_output, error=str(exc)))
+    finally:
+        if isinstance(runner, _ClosableRunner):
+            runner.close()
 
     return PromptEvalReport(results=results)

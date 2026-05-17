@@ -1,105 +1,11 @@
-from collections.abc import Callable
-import importlib
-import importlib.util
 import os
 from pathlib import Path
-import sys
 import tempfile
-from typing import Protocol, cast
 
+import pytest
 import yaml
 
-pytest = importlib.import_module("pytest")
-
-
-class _ConfigModule(Protocol):
-    AgentNodeConfig: object
-
-    def get_config(self) -> object: ...
-
-    def load_config(self) -> object: ...
-
-    def reset_config(self) -> None: ...
-
-
-class _AgentNode(Protocol):
-    name: str
-    provider: str
-    base_url: str
-    model: str
-    api_key: str
-    extra_headers: dict[str, str]
-    timeout_seconds: int
-
-
-class _AgentConfig(Protocol):
-    large: list[_AgentNode]
-    small: list[_AgentNode]
-
-
-class _DoctorConfig(Protocol):
-    enabled_checks: list[str]
-    checks: dict[str, "_DoctorCheckConfig"]
-
-
-class _DoctorCheckConfig(Protocol):
-    timeout: int
-    fail_on_error: bool
-    success_threshold: int
-    targets: list[str]
-
-
-class _SiyuanConfig(Protocol):
-    token: str
-    default_note: str
-
-
-class _CodexConfig(Protocol):
-    base_url: str
-    api_key: str
-    model: str
-    pic_model: str
-    instructions: str
-    output_dir: Path
-    timeout_seconds: int
-    pic_size: str
-    pic_quality: str
-    pic_output_format: str
-    pic_response_format: str
-
-
-class _Config(Protocol):
-    doctor: _DoctorConfig
-    agent: _AgentConfig
-    siyuan: _SiyuanConfig
-    codex: _CodexConfig
-
-
-class _AgentNodeConfigClass(Protocol):
-    __dataclass_fields__: dict[str, object]
-
-
-def _load_config_module() -> _ConfigModule:
-    module_name = "beartools_config_for_tests"
-    existing_module = sys.modules.get(module_name)
-    if existing_module is not None:
-        return cast(_ConfigModule, existing_module)
-
-    module_path = Path(__file__).resolve().parents[1] / "src" / "beartools" / "config.py"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载配置模块: {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return cast(_ConfigModule, module)
-
-
-_CONFIG_MODULE = _load_config_module()
-AgentNodeConfig = cast(_AgentNodeConfigClass, _CONFIG_MODULE.AgentNodeConfig)
-get_config = cast(Callable[[], _Config], _CONFIG_MODULE.get_config)
-load_config = cast(Callable[[], _Config], _CONFIG_MODULE.load_config)
-reset_config = cast(Callable[[], None], _CONFIG_MODULE.reset_config)
+from beartools.config import AgentNodeConfig, get_config, load_config, reset_config
 
 
 class TestConfig:
@@ -211,7 +117,7 @@ agent:
 agent:
   large:
     - name: "large-1"
-      provider: "anthropic"
+      provider: "bad-provider"
       base_url: "https://large1.example.com"
       model: "gpt-5"
   small:
@@ -222,8 +128,32 @@ agent:
 """
         )
 
-        with pytest.raises(RuntimeError, match=r"provider 仅支持 openai/openrouter"):
+        with pytest.raises(RuntimeError, match=r"provider 仅支持 openai/openrouter/anthropic"):
             load_config()
+
+    def test_parse_anthropic_agent_provider(self) -> None:
+        self._write_config(
+            """
+agent:
+  large:
+    - name: "claude-large"
+      provider: "anthropic"
+      base_url: "https://api.anthropic.com"
+      model: "claude-sonnet"
+      api_key: "anthropic-key"
+  small:
+    - name: "small-1"
+      provider: "openai"
+      base_url: "https://small1.example.com"
+      model: "gpt-4o-mini"
+      api_key: "small-key"
+"""
+        )
+
+        config = load_config()
+
+        assert config.agent.large[0].provider == "anthropic"
+        assert config.agent.large[0].model == "claude-sonnet"
 
     def test_reject_missing_large(self) -> None:
         self._write_config(

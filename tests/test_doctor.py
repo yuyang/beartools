@@ -4,12 +4,12 @@ import asyncio
 from dataclasses import dataclass
 import importlib
 from types import SimpleNamespace
-from typing import Protocol, cast
 from unittest.mock import patch
 
-from beartools.commands.doctor.base import CheckRegistry, CheckResult, CheckStatus
+import pytest
 
-pytest = importlib.import_module("pytest")
+from beartools.commands.doctor.base import CheckRegistry, CheckResult, CheckStatus
+from beartools.commands.doctor.checks import llm as llm_check_module
 
 
 def _load_doctor_command_module():
@@ -24,62 +24,11 @@ def _load_opencli_module():
     return importlib.import_module("beartools.commands.doctor.checks.opencli")
 
 
-class _RuntimeNodeProtocol(Protocol):
-    name: str
-    base_url: str
-    model: str
-
-
-class _LLMRuntimeProtocol(Protocol):
-    healthy_nodes: list[_RuntimeNodeProtocol]
-
-
-class _RuntimeModuleProtocol(Protocol):
-    LLMRuntimeInitializationError: type[BaseException]
-    LLMRuntimeNoHealthyNodeError: type[BaseException]
-
-
-class _CheckResultProtocol(Protocol):
-    name: str
-    status: object
-    message: str
-    detail: str | None
-
-
-class _CheckStatusProtocol(Protocol):
-    SUCCESS: object
-    FAILURE: object
-
-
-class _DoctorCheckProtocol(Protocol):
-    async def run(self) -> _CheckResultProtocol: ...
-
-
-class _DoctorCheckClass(Protocol):
-    def __call__(self) -> _DoctorCheckProtocol: ...
-
-
-class _CheckModuleProtocol(Protocol):
-    CheckStatus: _CheckStatusProtocol
-    LLMCheck: _DoctorCheckClass
-
-
 @dataclass(frozen=True, slots=True)
 class _FakeRuntimeNode:
     name: str
     base_url: str
     model: str
-
-
-@dataclass(frozen=True, slots=True)
-class _FakeRuntime:
-    healthy_nodes: list[_RuntimeNodeProtocol]
-
-
-def _load_llm_modules() -> tuple[_CheckModuleProtocol, _RuntimeModuleProtocol]:
-    check_module = cast(_CheckModuleProtocol, importlib.import_module("beartools.commands.doctor.checks.llm"))
-    runtime_module = cast(_RuntimeModuleProtocol, importlib.import_module("beartools.llm.runtime"))
-    return check_module, runtime_module
 
 
 class TestDoctorCommand:
@@ -584,7 +533,7 @@ class TestOpenCliRun:
 class TestDoctorLLMCheck:
     @pytest.mark.asyncio
     async def test_single_healthy_node_success(self) -> None:
-        check_module, _ = _load_llm_modules()
+        check_module = llm_check_module
         large_node = _FakeRuntimeNode(name="large-a", base_url="https://a.example.com/v1", model="gpt-5")
         small_node = _FakeRuntimeNode(name="small-a", base_url="https://b.example.com/v1", model="gpt-4o-mini")
 
@@ -610,7 +559,7 @@ class TestDoctorLLMCheck:
 
     @pytest.mark.asyncio
     async def test_multiple_healthy_nodes_success(self) -> None:
-        check_module, _ = _load_llm_modules()
+        check_module = llm_check_module
         large_nodes = [_FakeRuntimeNode(name="primary", base_url="https://a.example.com/v1", model="gpt-4.1-mini")]
         small_nodes = [_FakeRuntimeNode(name="backup", base_url="https://b.example.com/v1", model="gpt-4o-mini")]
 
@@ -635,7 +584,7 @@ class TestDoctorLLMCheck:
 
     @pytest.mark.asyncio
     async def test_initialization_error_returns_failure(self) -> None:
-        check_module, _ = _load_llm_modules()
+        check_module = llm_check_module
 
         with patch(
             "beartools.commands.doctor.checks.llm._collect_configured_nodes",
@@ -649,7 +598,7 @@ class TestDoctorLLMCheck:
 
     @pytest.mark.asyncio
     async def test_no_healthy_node_returns_failure(self) -> None:
-        check_module, _ = _load_llm_modules()
+        check_module = llm_check_module
         large_node = _FakeRuntimeNode(name="large-a", base_url="https://a.example.com/v1", model="gpt-5")
         small_node = _FakeRuntimeNode(name="small-a", base_url="https://b.example.com/v1", model="gpt-4o-mini")
 
@@ -677,7 +626,7 @@ class TestDoctorLLMCheck:
 
     @pytest.mark.asyncio
     async def test_unexpected_error_returns_failure(self) -> None:
-        check_module, _ = _load_llm_modules()
+        check_module = llm_check_module
         node = _FakeRuntimeNode(name="small-a", base_url="https://a.example.com/v1", model="gpt-4o-mini")
 
         with (

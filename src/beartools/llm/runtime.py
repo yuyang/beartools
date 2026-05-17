@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal
 
+from anthropic import Anthropic
 import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
@@ -138,57 +139,14 @@ _runtime_instance: LLRuntime | None = None
 _runtime_lock = Lock()
 
 
-class _OpenAIResponsesProtocol(Protocol):
-    def create(self, **kwargs: object) -> object: ...
-
-
-class _OpenAIClientProtocol(Protocol):
-    responses: _OpenAIResponsesProtocol
-
-
-class _OpenAIClientFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        base_url: str,
-        api_key: str,
-        timeout: float,
-        default_headers: dict[str, str],
-    ) -> _OpenAIClientProtocol: ...
-
-
-class _ProbeResponseWithOutputText(Protocol):
-    output_text: object
-
-
-class _ProbeResponseWithOutput(Protocol):
-    output: object
-
-
-class _ProbeOutputMessageWithContent(Protocol):
-    content: object
-
-
-class _ProbeOutputContentWithText(Protocol):
-    text: object
-
-
-@runtime_checkable
-class _StatusCodeError(Protocol):
-    status_code: int | None
-
-
 def _openai_client_factory(
     *,
     base_url: str,
     api_key: str,
     timeout: float,
     default_headers: dict[str, str],
-) -> _OpenAIClientProtocol:
-    return cast(
-        _OpenAIClientProtocol,
-        OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, default_headers=default_headers),
-    )
+) -> OpenAI:
+    return OpenAI(base_url=base_url, api_key=api_key, timeout=timeout, default_headers=default_headers)
 
 
 def _build_node_fingerprint(base_url: str, model: str, api_key: str, extra_headers: dict[str, str]) -> str:
@@ -214,28 +172,34 @@ def _collect_configured_nodes(tier: AgentTier) -> list[RuntimeNode]:
     return _deduplicate_nodes(config_nodes)
 
 
+def get_openai_compatible_node(tier: AgentTier) -> RuntimeNode:
+    """从指定 tier 中选择第一个 OpenAI 兼容运行时节点。"""
+
+    runtime = get_llm_runtime()
+    for node in runtime.available_nodes_for_tier(tier):
+        if node.provider in {"openai", "openrouter"}:
+            return node
+    raise LLMRuntimeNoHealthyNodeError(f"{tier} 没有可用的 OpenAI 兼容 LLM 节点")
+
+
 def _ensure_probe_response_has_text(response: object) -> None:
     """确保 Responses API 探测响应至少包含一段可识别文本。"""
-    if hasattr(response, "output_text"):
-        response_with_output_text = cast(_ProbeResponseWithOutputText, response)
-        output_text = response_with_output_text.output_text
-        if isinstance(output_text, str) and output_text.strip():
+    match response:
+        case object(output_text=str() as output_text) if output_text.strip():
             return None
-
-    if not hasattr(response, "output"):
-        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
-
-    response_with_output = cast(_ProbeResponseWithOutput, response)
-    output = response_with_output.output
-    if not isinstance(output, list) or not output:
-        raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
+        case object(output=list() as output) if output:
+            pass
+        case _:
+            raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
 
     for item in output:
-        if not hasattr(item, "content"):
-            continue
-        item_with_content = cast(_ProbeOutputMessageWithContent, item)
-        if _content_has_probe_text(item_with_content.content):
-            return None
+        match item:
+            case object(content=str() as content):
+                if _content_has_probe_text(content):
+                    return None
+            case object(content=list() as content):
+                if _content_has_probe_text(content):
+                    return None
 
     raise LLMRuntimeInitializationError("LLM 节点探测失败：未返回可识别的最小生成结果")
 
@@ -250,27 +214,46 @@ def _content_has_probe_text(content: object) -> bool:
         return False
 
     for part in content:
-        if not hasattr(part, "text"):
-            continue
-        part_with_text = cast(_ProbeOutputContentWithText, part)
-        text = part_with_text.text
-        if isinstance(text, str) and text.strip():
-            return True
+        match part:
+            case object(text=str() as text) if text.strip():
+                return True
     return False
 
 
 def _probe_node(node: RuntimeNode) -> None:
+    if node.provider == "anthropic":
+        _probe_anthropic_node(node)
+        return None
+
     client = _openai_client_factory(
         base_url=node.base_url,
         api_key=node.api_key,
         timeout=float(node.timeout_seconds),
         default_headers=node.extra_headers,
     )
-    response = client.responses.create(
-        model=node.model,
-        input="ping",
-    )
+    with client:
+        response = client.responses.create(
+            model=node.model,
+            input="ping",
+        )
     _ensure_probe_response_has_text(response)
+
+
+def _probe_anthropic_node(node: RuntimeNode) -> None:
+    """使用 Anthropic Messages API 探测 Anthropic 节点。"""
+
+    client = Anthropic(
+        base_url=node.base_url,
+        api_key=node.api_key,
+        timeout=float(node.timeout_seconds),
+        default_headers=node.extra_headers,
+    )
+    with client:
+        client.messages.create(
+            model=node.model,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
 
 
 def probe_runtime_node(node: RuntimeNode) -> None:
@@ -280,9 +263,9 @@ def probe_runtime_node(node: RuntimeNode) -> None:
 
 
 def _sanitize_probe_failure_reason(error: BaseException) -> str:
-    status_code = error.status_code if isinstance(error, _StatusCodeError) else None
-    if isinstance(status_code, int):
-        return f"{type(error).__name__}(status={status_code})"
+    match error:
+        case object(status_code=int() as status_code):
+            return f"{type(error).__name__}(status={status_code})"
     return type(error).__name__
 
 
@@ -384,8 +367,10 @@ def _should_invalidate_by_type(error: BaseException) -> bool:
     if isinstance(error, httpx.NetworkError):
         return True
 
-    status_code = error.status_code if isinstance(error, _StatusCodeError) else None
-    return isinstance(status_code, int) and status_code >= 500
+    match error:
+        case object(status_code=int() as status_code):
+            return status_code >= 500
+    return False
 
 
 def _should_invalidate_known_network_error(error: BaseException) -> bool:

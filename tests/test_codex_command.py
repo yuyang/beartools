@@ -7,7 +7,6 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -1292,9 +1291,8 @@ def test_run_codex_picedit_uses_incrementing_output_name(tmp_path: Path, monkeyp
     assert captured["image_name"] == str(image_file)
     image_kwargs = captured["kwargs"]
     assert isinstance(image_kwargs, dict)
-    image_kwargs_mapping = cast(dict[str, object], image_kwargs)
-    image_value = image_kwargs_mapping.get("image")
-    assert image_kwargs_mapping == {
+    image_value = image_kwargs.get("image")
+    assert image_kwargs == {
         "model": "gpt-image-2",
         "image": image_value,
         "prompt": "保留人物主体，提亮光线并增加悬浮面板",
@@ -2021,7 +2019,8 @@ def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.M
     assert captured["base_url"] == "https://example.com/v1"
     assert captured["model"] == "grok-3-mini"
     assert captured["input"] == "原始 markdown 提示词"
-    agent_kwargs = cast(dict[str, object], captured["agent_kwargs"])
+    agent_kwargs = captured["agent_kwargs"]
+    assert isinstance(agent_kwargs, dict)
     assert agent_kwargs["instructions"] == "模板里的提示词"
 
 

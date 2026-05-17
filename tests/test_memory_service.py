@@ -41,15 +41,14 @@ class _FakeDailySummarizer:
         return "- 今天主要在做：验证记忆系统\n- 关键结果：summary 已生成\n- 未完成/后续：继续测试"
 
 
-class _CloseableModelBundle:
+class _FakeAsyncClient:
     def __init__(self, close_calls: list[str]) -> None:
-        self.model = "fake-model"
         self._close_calls = close_calls
 
-    def close(self) -> None:
-        self._close_calls.append("closed")
+    async def __aenter__(self) -> _FakeAsyncClient:
+        return self
 
-    async def aclose(self) -> None:
+    async def __aexit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
         self._close_calls.append("closed")
 
 
@@ -57,9 +56,9 @@ class _FakeLLFactory:
     requested_tiers: list[str] = []
     close_calls: list[str] = []
 
-    def create_bundle(self, *, tier: str) -> _CloseableModelBundle:
-        self.requested_tiers.append(tier)
-        return _CloseableModelBundle(self.close_calls)
+    async def create_async_client_for_node(self, node: SimpleNamespace) -> _FakeAsyncClient:
+        self.requested_tiers.append(node.tier)
+        return _FakeAsyncClient(self.close_calls)
 
 
 class _FakeMemoryAgent:
@@ -244,6 +243,13 @@ def test_llm_command_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPa
     _FakeMemoryAgent.output = "命令总结"
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
+    monkeypatch.setattr(
+        memory_service,
+        "get_openai_compatible_node",
+        lambda tier: SimpleNamespace(tier=tier, model=f"{tier}-model", provider="openai", timeout_seconds=30),
+    )
+    monkeypatch.setattr(memory_service, "AsyncOpenAI", _FakeAsyncClient)
+    monkeypatch.setattr(memory_service, "create_openai_responses_model", lambda client, **kwargs: "fake-model")
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
 
     summary = memory_service._LLMCommandSummarizer().summarize_command(_build_memory_input())
@@ -263,6 +269,13 @@ def test_llm_daily_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatc
     _FakeMemoryAgent.output = "日总结"
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
+    monkeypatch.setattr(
+        memory_service,
+        "get_openai_compatible_node",
+        lambda tier: SimpleNamespace(tier=tier, model=f"{tier}-model", provider="openai", timeout_seconds=30),
+    )
+    monkeypatch.setattr(memory_service, "AsyncOpenAI", _FakeAsyncClient)
+    monkeypatch.setattr(memory_service, "create_openai_responses_model", lambda client, **kwargs: "fake-model")
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
 
     summary = memory_service._LLMDailySummarizer().summarize_day("day content")

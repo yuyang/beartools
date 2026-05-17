@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,26 +17,42 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from openai import AsyncOpenAI
 from pydantic_ai import Agent
 
 from beartools.config import GmailConfig, get_config
 from beartools.llm.factory import LLFactory
+from beartools.llm.pydantic_openai import create_openai_responses_model
+from beartools.llm.runtime import RuntimeNode, get_openai_compatible_node
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.send"]
 EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ProgressCallback = Callable[[str], None]
 
 
-class SummaryAgentProtocol(Protocol):
-    """摘要模型协议。"""
+async def _create_openai_summary_client() -> tuple[RuntimeNode, AsyncOpenAI]:
+    """创建 Gmail 摘要用 OpenAI client。"""
 
-    def run_sync(self, prompt: str) -> object: ...
+    node = get_openai_compatible_node("small")
+    client = await LLFactory().create_async_client_for_node(node)
+    if not isinstance(client, AsyncOpenAI):
+        raise RuntimeError("Gmail 摘要当前只支持 OpenAI 兼容 client")
+    return node, client
 
 
-class SummaryResultProtocol(Protocol):
-    """摘要结果协议。"""
+async def _summarize_messages_async(prompt: str) -> str:
+    """异步运行 Gmail 摘要并用 AsyncOpenAI context manager 关闭 client。"""
 
-    output: object
+    node, client = await _create_openai_summary_client()
+    async with client:
+        model = create_openai_responses_model(
+            client,
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
+        )
+        summary_agent: Agent[None, str] = Agent(model=model, output_type=str)
+        summary_result = await summary_agent.run(prompt)
+        return str(summary_result.output)
 
 
 class CredentialsProtocol(Protocol):
@@ -311,16 +328,11 @@ def _build_summary_prompt(messages: list[GmailMessageSummaryInput], fetched_days
 def summarize_messages(
     messages: list[GmailMessageSummaryInput],
     fetched_days: int,
-    agent: SummaryAgentProtocol | None = None,
 ) -> str:
     """调用模型对整批邮件进行摘要。"""
 
-    summary_agent = (
-        agent if agent is not None else cast(SummaryAgentProtocol, Agent(model=LLFactory().create(), output_type=str))
-    )
     prompt = _build_summary_prompt(messages, fetched_days=fetched_days)
-    result = cast(SummaryResultProtocol, summary_agent.run_sync(prompt))
-    return str(result.output)
+    return asyncio.run(_summarize_messages_async(prompt))
 
 
 def fetch_gmail_summary(

@@ -88,16 +88,19 @@ beartools = "beartools.cli:_main_wrapper"
 - `llm/runtime.py`
   - 将配置中的 agent 节点转换为运行时节点池。
   - 对 `small`、`large` 两个 tier 做健康探测、去重、故障标记和轮换。
+  - `openai` / `openrouter` 节点使用 OpenAI Responses API 探测；`anthropic` 节点使用 Anthropic Messages API 探测。
   - 对外提供 `get_active_llm_node()`、`mark_active_llm_node_failed()`、`get_llm_runtime()`。
 - `llm/factory.py`
-  - 根据当前健康节点创建 OpenAI SDK 客户端、Pydantic AI provider 和 Responses model。
-  - `LLFactory.create()` 默认会在创建模型前重新探测当前 `small` active node，也可通过 `tier="large"` 使用 large 节点；探测失败且属于可失效错误时标记节点失败并切到下一个节点。
-  - 默认走 OpenAI Responses API，避免 Chat Completions 兼容响应中 `id=None` 等 schema 差异影响 PydanticAI。
-  - 隐藏不同 openai/pydantic-ai 版本对 default headers 支持差异。
+  - 只负责从 `large` / `small` 健康节点池中选择配置并构建 SDK client，不再依赖或返回 PydanticAI model。
+  - `LLFactory.create_client()` / `create_async_client()` 按 `model`、`type=openai|openrouter|anthropic|any` 和 `model_size=small|large` 选择第一个匹配健康节点；`model` 同时匹配节点 `name` 和 `model`。
+  - `create_client_for_node()` / `create_async_client_for_node()` 供 `model check` 等已经自己枚举节点的调用方按指定 `RuntimeNode` 构建 client。
+  - `openai` / `openrouter` 构建 OpenAI 兼容 client；`anthropic` 构建 Anthropic client；client 的关闭由调用方负责。
+- `llm/pydantic_openai.py`
+  - 调用方侧 PydanticAI OpenAI Responses model 封装工具；需要结构化输出的业务模块拿到 OpenAI 兼容 client 后自行封装。
 - `model_check.py`
   - 读取 `check/questions.yaml` 或指定 YAML/JSON 题库。
   - 支持用 `--id` 只测试指定题目 ID，用 `--model-name` / `-m` 只测试匹配的节点 name 或 model。
-  - 遍历 `agent.large` 和 `agent.small` 中的去重模型节点，逐题调用 Responses API。
+  - 遍历 `agent.large` 和 `agent.small` 中的去重模型节点，通过 `LLFactory.create_client_for_node()` 获取已选节点的 OpenAI 兼容 client，逐题调用 Responses API。
   - 只接受 `A` 到 `Z` 的单字母选择题答案，模型输出解释、标点或包装文本时判错。
   - 对外提供题库加载、进度与单题结果事件回调、单节点评测、完整评测和 Markdown 报告渲染。
 - `prompt/template.py`
@@ -135,6 +138,7 @@ beartools = "beartools.cli:_main_wrapper"
   - 读取 CSV/XLS/XLSX 输入，生成 preview，并返回原始行数据。
 - `bill/agent.py`
   - 通过 LLM 解析账单结构、分析单行用途/归属人、解析部分退款金额。
+  - 自行将 `LLFactory` 返回的 OpenAI 兼容 async client 封装为 PydanticAI Responses model；当前账单结构化输出不支持 Anthropic 节点。
 - `bill/status_mapping.py`
   - 加载 `config/bill_status_mapping.yaml`，将原始交易状态映射为标准状态。
   - 支持交互确认后追加 exact mapping。

@@ -4,31 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import calendar
-from collections.abc import Awaitable
 from dataclasses import replace
 from datetime import date, timedelta
 import os
 from pathlib import Path
 import re
-from typing import Protocol, cast
 
+from openai import AsyncOpenAI
 from pydantic_ai import Agent
 
 from beartools.llm.factory import LLFactory
+from beartools.llm.pydantic_openai import create_openai_responses_model
+from beartools.llm.runtime import get_openai_compatible_node
 from beartools.memory.models import CommandMemoryInput, CommandSummarizer, DailySummarizer
 from beartools.memory.prompts import build_command_memory_prompt, build_daily_summary_prompt
 
 MAX_CAPTURE_CHARS = 4000
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
-
-
-class _RunResultProtocol(Protocol):
-    output: object
-
-
-class _AgentProtocol(Protocol):
-    def run(self, prompt: str) -> Awaitable[_RunResultProtocol]:
-        """异步运行模型。"""
 
 
 def get_memory_root() -> Path:
@@ -220,13 +212,19 @@ class _LLMCommandSummarizer:
 async def _summarize_command_async(memory_input: CommandMemoryInput) -> str:
     """在同一事件循环内运行命令摘要并关闭模型客户端。"""
 
-    model_bundle = LLFactory().create_bundle(tier="small")
-    try:
-        agent = cast(_AgentProtocol, Agent(model=model_bundle.model, output_type=str))
+    node = get_openai_compatible_node("small")
+    client = await LLFactory().create_async_client_for_node(node)
+    if not isinstance(client, AsyncOpenAI):
+        raise RuntimeError("命令记忆摘要当前只支持 OpenAI 兼容 client")
+    async with client:
+        model = create_openai_responses_model(
+            client,
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
+        )
+        agent: Agent[None, str] = Agent(model=model, output_type=str)
         result = await agent.run(build_command_memory_prompt(memory_input))
         return str(result.output)
-    finally:
-        await model_bundle.aclose()
 
 
 class _LLMDailySummarizer:
@@ -237,10 +235,16 @@ class _LLMDailySummarizer:
 async def _summarize_day_async(day_content: str) -> str:
     """在同一事件循环内运行日总结并关闭模型客户端。"""
 
-    model_bundle = LLFactory().create_bundle(tier="large")
-    try:
-        agent = cast(_AgentProtocol, Agent(model=model_bundle.model, output_type=str))
+    node = get_openai_compatible_node("large")
+    client = await LLFactory().create_async_client_for_node(node)
+    if not isinstance(client, AsyncOpenAI):
+        raise RuntimeError("日记忆摘要当前只支持 OpenAI 兼容 client")
+    async with client:
+        model = create_openai_responses_model(
+            client,
+            model_name=node.model,
+            timeout_seconds=float(node.timeout_seconds),
+        )
+        agent: Agent[None, str] = Agent(model=model, output_type=str)
         result = await agent.run(build_daily_summary_prompt(day_content))
         return str(result.output)
-    finally:
-        await model_bundle.aclose()

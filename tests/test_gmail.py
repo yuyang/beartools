@@ -242,7 +242,10 @@ def test_write_summary_markdown_uses_dynamic_max_results_notice(tmp_path: Path) 
 
 
 class FakeAgent:
-    def run_sync(self, prompt: str) -> object:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    async def run(self, prompt: str) -> object:
         assert "最重要的 10 个邮件事件" in prompt
         assert "不要机械逐封列出同类邮件" in prompt
         assert "证券交易类邮件要优先汇总" in prompt
@@ -252,6 +255,18 @@ class FakeAgent:
             output = "## 最重要的 10 个邮件事件\n\n1. 邮件A\n\n## 总体概览\n\n整体稳定"
 
         return Result()
+
+
+class FakeOpenAISummaryClient:
+    entered = False
+    exited = False
+
+    async def __aenter__(self) -> FakeOpenAISummaryClient:
+        self.entered = True
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+        self.exited = True
 
 
 def test_summarize_messages_returns_model_output() -> None:
@@ -266,11 +281,23 @@ def test_summarize_messages_returns_model_output() -> None:
             body_text="正文A",
         )
     ]
+    client = FakeOpenAISummaryClient()
 
-    summary = summarize_messages(messages, fetched_days=3, agent=FakeAgent())
+    async def fake_create_openai_summary_client() -> tuple[object, FakeOpenAISummaryClient]:
+        node = type("Node", (), {"model": "fake-model", "timeout_seconds": 30})()
+        return node, client
+
+    with (
+        patch("beartools.gmail._create_openai_summary_client", fake_create_openai_summary_client),
+        patch("beartools.gmail.create_openai_responses_model", return_value="fake-model"),
+        patch("beartools.gmail.Agent", FakeAgent),
+    ):
+        summary = summarize_messages(messages, fetched_days=3)
 
     assert "最重要的 10 个邮件事件" in summary
     assert "总体概览" in summary
+    assert client.entered is True
+    assert client.exited is True
 
 
 def test_summary_prompt_requires_grouping_related_trade_emails() -> None:

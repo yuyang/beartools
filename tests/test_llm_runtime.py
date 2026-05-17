@@ -1,179 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-import importlib
-import importlib.util
-from pathlib import Path
-import sys
 from types import SimpleNamespace
-from typing import Protocol, cast
 from unittest.mock import patch
 
 import httpx
 from openai import APIConnectionError, APITimeoutError
 from pydantic import BaseModel, ValidationError
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
+import pytest
 
-pytest = importlib.import_module("pytest")
-
-
-class _AgentNodeConfigProtocol(Protocol):
-    name: str
-    provider: str
-    base_url: str
-    model: str
-    api_key: str
-    extra_headers: dict[str, str]
-    timeout_seconds: int
-
-
-class _AgentConfigProtocol(Protocol):
-    large: list[_AgentNodeConfigProtocol]
-    small: list[_AgentNodeConfigProtocol]
-
-
-class _ConfigProtocol(Protocol):
-    agent: _AgentConfigProtocol
-
-
-class _ConfigModule(Protocol):
-    AgentConfig: object
-    AgentNodeConfig: object
-    Config: object
-
-
-class _AgentNodeConfigClass(Protocol):
-    def __call__(
-        self,
-        *,
-        name: str,
-        provider: str,
-        base_url: str,
-        model: str,
-        api_key: str,
-        extra_headers: dict[str, str],
-        timeout_seconds: int,
-    ) -> _AgentNodeConfigProtocol: ...
-
-
-class _AgentConfigClass(Protocol):
-    def __call__(
-        self,
-        *,
-        large: list[_AgentNodeConfigProtocol],
-        small: list[_AgentNodeConfigProtocol],
-    ) -> _AgentConfigProtocol: ...
-
-
-class _ConfigClass(Protocol):
-    def __call__(self, *, agent: _AgentConfigProtocol) -> _ConfigProtocol: ...
-
-
-class _RuntimeNodeProtocol(Protocol):
-    name: str
-    provider: str
-    base_url: str
-    model: str
-    api_key: str
-    extra_headers: dict[str, str]
-    timeout_seconds: int
-    fingerprint: str
-
-
-class _RuntimeNodeClass(Protocol):
-    def __call__(
-        self,
-        *,
-        name: str,
-        provider: str,
-        base_url: str,
-        model: str,
-        api_key: str,
-        extra_headers: dict[str, str],
-        timeout_seconds: int,
-        fingerprint: str,
-    ) -> _RuntimeNodeProtocol: ...
-
-    @classmethod
-    def from_config(cls, config: _AgentNodeConfigProtocol) -> _RuntimeNodeProtocol: ...
-
-
-class _LLRuntimeProtocol(Protocol):
-    large_nodes: list[_RuntimeNodeProtocol]
-    small_nodes: list[_RuntimeNodeProtocol]
-    healthy_nodes: list[_RuntimeNodeProtocol]
-    available_nodes: list[_RuntimeNodeProtocol]
-
-    def get_active_node(self, tier: str = "small") -> _RuntimeNodeProtocol: ...
-
-    def mark_node_failed(
-        self, node: _RuntimeNodeProtocol, error: BaseException | None = None, tier: str = "small"
-    ) -> bool: ...
-
-
-class _LLRuntimeClass(Protocol):
-    def __call__(
-        self, *, large_nodes: list[_RuntimeNodeProtocol], small_nodes: list[_RuntimeNodeProtocol]
-    ) -> _LLRuntimeProtocol: ...
-
-
-class _PytestRaisesContext(Protocol):
-    value: BaseException
-
-
-class _PytestRaisesManager(Protocol):
-    def __enter__(self) -> _PytestRaisesContext: ...
-
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool | None: ...
-
-
-class _PytestMarkProtocol(Protocol):
-    def parametrize(self, *args: object, **kwargs: object) -> Callable[[object], object]: ...
-
-
-class _PytestModule(Protocol):
-    mark: _PytestMarkProtocol
-
-    def raises(
-        self, expected_exception: type[BaseException], *args: object, **kwargs: object
-    ) -> _PytestRaisesManager: ...
-
-
-class _RuntimeModule(Protocol):
-    RuntimeNode: _RuntimeNodeClass
-    LLRuntime: _LLRuntimeClass
-    LLMRuntimeInitializationError: type[BaseException]
-    LLMRuntimeNoHealthyNodeError: type[BaseException]
-
-    def create_llm_runtime(self) -> _LLRuntimeProtocol: ...
-
-    def _probe_node(self, node: _RuntimeNodeProtocol) -> None: ...
-
-    def should_invalidate_node(self, error: BaseException) -> bool: ...
-
-
-def _load_runtime_module() -> _RuntimeModule:
-    module_name = "beartools_llm_runtime_for_tests"
-    existing_module = sys.modules.get(module_name)
-    if existing_module is not None:
-        return cast(_RuntimeModule, existing_module)
-
-    module_path = Path(__file__).resolve().parents[1] / "src" / "beartools" / "llm" / "runtime.py"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载运行时模块: {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return cast(_RuntimeModule, module)
-
-
-_CONFIG_MODULE = cast(_ConfigModule, importlib.import_module("beartools.config"))
-AgentConfig = cast(_AgentConfigClass, _CONFIG_MODULE.AgentConfig)
-AgentNodeConfig = cast(_AgentNodeConfigClass, _CONFIG_MODULE.AgentNodeConfig)
-Config = cast(_ConfigClass, _CONFIG_MODULE.Config)
-runtime_module = _load_runtime_module()
-pytest = cast(_PytestModule, pytest)
+from beartools.config import AgentConfig, AgentNodeConfig, Config
+from beartools.llm import runtime as runtime_module
+from beartools.llm.runtime import RuntimeNode
 
 
 class StatusCodeError(Exception):
@@ -203,7 +41,7 @@ def create_agent_node_config(
     extra_headers: dict[str, str] | None = None,
     timeout_seconds: int = 30,
     provider: str = "openai",
-) -> _AgentNodeConfigProtocol:
+) -> AgentNodeConfig:
     return AgentNodeConfig(
         name=name,
         provider=provider,
@@ -215,11 +53,11 @@ def create_agent_node_config(
     )
 
 
-def create_config(*, large: list[_AgentNodeConfigProtocol], small: list[_AgentNodeConfigProtocol]) -> _ConfigProtocol:
+def create_config(*, large: list[AgentNodeConfig], small: list[AgentNodeConfig]) -> Config:
     return Config(agent=AgentConfig(large=large, small=small))
 
 
-def create_runtime_node(name: str, *, extra_headers: dict[str, str] | None = None) -> _RuntimeNodeProtocol:
+def create_runtime_node(name: str, *, extra_headers: dict[str, str] | None = None) -> RuntimeNode:
     return runtime_module.RuntimeNode.from_config(create_agent_node_config(name, extra_headers=extra_headers))
 
 
@@ -286,7 +124,7 @@ class TestLLRuntime:
 
         probed_names: list[str] = []
 
-        def probe_node(node: _RuntimeNodeProtocol) -> None:
+        def probe_node(node: RuntimeNode) -> None:
             probed_names.append(node.name)
 
         with (
@@ -309,7 +147,7 @@ class TestLLRuntime:
 
         probed_names: list[str] = []
 
-        def probe_node(node: _RuntimeNodeProtocol) -> None:
+        def probe_node(node: RuntimeNode) -> None:
             probed_names.append(node.name)
             if node.name == "primary":
                 raise TimeoutError("primary probe timed out")
@@ -348,7 +186,7 @@ class TestLLRuntime:
         candidate = create_agent_node_config("candidate")
         config = create_config(large=[primary], small=[candidate])
 
-        def probe_node(node: _RuntimeNodeProtocol) -> None:
+        def probe_node(node: RuntimeNode) -> None:
             raise RuntimeError(f"secret-detail-for-{node.name}")
 
         with (
@@ -363,7 +201,7 @@ class TestLLRuntime:
         candidate = create_agent_node_config("candidate")
         config = create_config(large=[primary], small=[candidate])
 
-        def probe_node(node: _RuntimeNodeProtocol) -> None:
+        def probe_node(node: RuntimeNode) -> None:
             raise TimeoutError(f"probe timed out for {node.name}")
 
         with (
@@ -440,6 +278,12 @@ class TestLLRuntime:
         class FakeOpenAIClient:
             responses = FakeResponses()
 
+            def __enter__(self) -> FakeOpenAIClient:
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+                return None
+
         def fake_client_factory(**kwargs: object) -> FakeOpenAIClient:
             client_kwargs.append(kwargs)
             return FakeOpenAIClient()
@@ -475,6 +319,12 @@ class TestLLRuntime:
         class FakeOpenAIClient:
             responses = FakeResponses()
 
+            def __enter__(self) -> FakeOpenAIClient:
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+                return None
+
         with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
             runtime_module._probe_node(node)
 
@@ -488,6 +338,12 @@ class TestLLRuntime:
 
         class FakeOpenAIClient:
             responses = FakeResponses()
+
+            def __enter__(self) -> FakeOpenAIClient:
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+                return None
 
         with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
             runtime_module._probe_node(node)
@@ -510,6 +366,12 @@ class TestLLRuntime:
 
         class FakeOpenAIClient:
             responses = FakeResponses()
+
+            def __enter__(self) -> FakeOpenAIClient:
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+                return None
 
         with patch.object(runtime_module, "_openai_client_factory", return_value=FakeOpenAIClient()):
             with pytest.raises(

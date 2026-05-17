@@ -13,6 +13,7 @@ from typing import Protocol, cast
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from beartools.config import AgentNodeConfig, get_config
+from beartools.llm.factory import LLFactory
 from beartools.llm.runtime import RuntimeNode
 
 DEFAULT_MODEL_CHECK_QUESTIONS_PATH = Path("check/questions.yaml")
@@ -27,10 +28,6 @@ class _YamlModule(Protocol):
 
 class _OpenAIResponsesProtocol(Protocol):
     def create(self, **kwargs: object) -> object: ...
-
-
-class _OpenAIClientProtocol(Protocol):
-    responses: _OpenAIResponsesProtocol
 
 
 class _ResponseWithOutputText(Protocol):
@@ -297,18 +294,6 @@ def filter_model_check_nodes(
     return filtered_nodes
 
 
-def _openai_client_factory(node: RuntimeNode) -> _OpenAIClientProtocol:
-    return cast(
-        _OpenAIClientProtocol,
-        OpenAI(
-            base_url=node.base_url,
-            api_key=node.api_key,
-            timeout=float(node.timeout_seconds),
-            default_headers=node.extra_headers,
-        ),
-    )
-
-
 def format_question_prompt(question: ModelCheckQuestion) -> str:
     """构造选择题评测提示词。"""
 
@@ -387,7 +372,7 @@ def parse_model_choice(raw_output: str, valid_options: set[str]) -> str | None:
     return None
 
 
-def _ask_question(client: _OpenAIClientProtocol, node: RuntimeNode, question: ModelCheckQuestion) -> ModelCheckAnswer:
+def _ask_question(client: OpenAI, node: RuntimeNode, question: ModelCheckQuestion) -> ModelCheckAnswer:
     prompt = format_question_prompt(question)
     response = client.responses.create(
         model=node.model,
@@ -428,51 +413,54 @@ def run_model_check_for_node(
     """对单个模型节点执行所有题目。"""
 
     start_time = time.time()
-    client = _openai_client_factory(node)
-    answers: list[ModelCheckAnswer] = []
-    total_steps = total_nodes * len(questions)
-    for question_index, question in enumerate(questions, start=1):
-        if progress_callback is not None:
-            progress_callback(
-                ModelCheckProgressEvent(
-                    tier=tier,
-                    node=node,
-                    question=question,
-                    node_index=node_index,
-                    total_nodes=total_nodes,
-                    question_index=question_index,
-                    total_questions=len(questions),
-                    completed_steps=completed_steps_before_node + question_index - 1,
-                    total_steps=total_steps,
+    client = LLFactory().create_client_for_node(node)
+    if not isinstance(client, OpenAI):
+        raise RuntimeError("model check 当前只支持 OpenAI 兼容 client")
+    with client:
+        answers: list[ModelCheckAnswer] = []
+        total_steps = total_nodes * len(questions)
+        for question_index, question in enumerate(questions, start=1):
+            if progress_callback is not None:
+                progress_callback(
+                    ModelCheckProgressEvent(
+                        tier=tier,
+                        node=node,
+                        question=question,
+                        node_index=node_index,
+                        total_nodes=total_nodes,
+                        question_index=question_index,
+                        total_questions=len(questions),
+                        completed_steps=completed_steps_before_node + question_index - 1,
+                        total_steps=total_steps,
+                    )
                 )
-            )
-        try:
-            answer = _ask_question(client, node, question)
-        except (APIConnectionError, APITimeoutError, APIStatusError, TimeoutError) as exc:
-            answer = ModelCheckAnswer(
-                question_id=question.id,
-                expected_answer=question.answer,
-                predicted_answer=None,
-                raw_output="",
-                correct=False,
-                error=_format_error(exc),
-            )
-        answers.append(answer)
-        if answer_callback is not None:
-            answer_callback(
-                ModelCheckAnswerEvent(
-                    tier=tier,
-                    node=node,
-                    question=question,
-                    answer=answer,
-                    node_index=node_index,
-                    total_nodes=total_nodes,
-                    question_index=question_index,
-                    total_questions=len(questions),
-                    completed_steps=completed_steps_before_node + question_index,
-                    total_steps=total_steps,
+            try:
+                answer = _ask_question(client, node, question)
+            except (APIConnectionError, APITimeoutError, APIStatusError, TimeoutError) as exc:
+                answer = ModelCheckAnswer(
+                    question_id=question.id,
+                    expected_answer=question.answer,
+                    predicted_answer=None,
+                    raw_output="",
+                    correct=False,
+                    error=_format_error(exc),
                 )
-            )
+            answers.append(answer)
+            if answer_callback is not None:
+                answer_callback(
+                    ModelCheckAnswerEvent(
+                        tier=tier,
+                        node=node,
+                        question=question,
+                        answer=answer,
+                        node_index=node_index,
+                        total_nodes=total_nodes,
+                        question_index=question_index,
+                        total_questions=len(questions),
+                        completed_steps=completed_steps_before_node + question_index,
+                        total_steps=total_steps,
+                    )
+                )
     return ModelCheckNodeResult(
         tier=tier,
         node=node,

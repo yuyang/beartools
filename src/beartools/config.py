@@ -220,8 +220,8 @@ def _parse_extra_headers(value: object, path: str) -> dict[str, str]:
 def _parse_provider(value: object, path: str) -> str:
     """解析并校验 provider。"""
     provider = _require_non_empty_string(value, f"{path}.provider")
-    if provider not in {"openai", "openrouter"}:
-        raise RuntimeError(f"{path}.provider 仅支持 openai/openrouter")
+    if provider not in {"openai", "openrouter", "anthropic"}:
+        raise RuntimeError(f"{path}.provider 仅支持 openai/openrouter/anthropic")
     return provider
 
 

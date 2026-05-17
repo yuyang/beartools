@@ -1,63 +1,25 @@
-"""LLM 模型工厂。
+"""LLM SDK client 工厂。
 
-根据运行时当前活动节点构造 PydanticAI 的 OpenAIResponsesModel。
+本模块只负责从运行时节点中选择配置并构建 OpenAI/Anthropic SDK client。
+PydanticAI 模型封装和 client 关闭都由调用方负责。
 """
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
-import importlib
 import inspect
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
-from pydantic_ai.models import Model
+from anthropic import Anthropic, AsyncAnthropic
+from openai import AsyncOpenAI, OpenAI
 
 from beartools.llm.runtime import AgentTier, LLRuntime, RuntimeNode, get_llm_runtime, probe_runtime_node
 from beartools.logger import get_logger
 
-
-class _AsyncOpenAIFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        base_url: str | None = ...,
-        api_key: str | None = ...,
-        timeout: float | None = ...,
-        default_headers: Mapping[str, str] | None = ...,
-    ) -> object: ...
-
-
-class _ClosableAsyncClient(Protocol):
-    def close(self) -> Awaitable[object] | object:
-        """关闭异步客户端。"""
-
-
-class _OpenAIModule(Protocol):
-    AsyncOpenAI: _AsyncOpenAIFactory
-
-
-class _OpenAIProviderFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        base_url: str | None = ...,
-        api_key: str | None = ...,
-        openai_client: object | None = ...,
-    ) -> object: ...
-
-
-class _OpenAIResponsesModelFactory(Protocol):
-    def __call__(self, *, model_name: str, provider: object, settings: dict[str, float]) -> Model[object]: ...
-
-
-class _PydanticAIModelsOpenAIModule(Protocol):
-    OpenAIResponsesModel: _OpenAIResponsesModelFactory
-
-
-class _PydanticAIProvidersOpenAIModule(Protocol):
-    OpenAIProvider: _OpenAIProviderFactory
+ProviderType = Literal["openai", "openrouter", "anthropic", "any"]
+ProviderFamily = Literal["openai", "anthropic"]
+type SyncLLMClient = OpenAI | Anthropic
+type AsyncLLMClient = AsyncOpenAI | AsyncAnthropic
 
 
 class _LoggerProtocol(Protocol):
@@ -65,27 +27,7 @@ class _LoggerProtocol(Protocol):
 
 
 class LLFactoryError(RuntimeError):
-    """LLM 工厂配置错误。"""
-
-
-@dataclass(frozen=True)
-class LLModelBundle:
-    """LLM 模型与底层客户端的生命周期组合。"""
-
-    model: Model[object]
-    client: _ClosableAsyncClient
-
-    def close(self) -> None:
-        """同步关闭底层异步客户端，避免命令退出后遗留异步关闭任务。"""
-
-        asyncio.run(self.aclose())
-
-    async def aclose(self) -> None:
-        """异步关闭底层客户端。"""
-
-        close_result = self.client.close()
-        if inspect.isawaitable(close_result):
-            await cast(Awaitable[object], close_result)
+    """LLM 工厂配置或选择错误。"""
 
 
 def _get_logger() -> _LoggerProtocol:
@@ -95,76 +37,103 @@ def _get_logger() -> _LoggerProtocol:
 
 
 def _supports_default_headers() -> bool:
-    """判断当前底层客户端是否支持默认请求头。"""
+    """判断当前 OpenAI 客户端是否支持默认请求头。"""
 
-    openai_module = cast(_OpenAIModule, importlib.import_module("openai"))
-    async_openai = openai_module.AsyncOpenAI
-    return "default_headers" in inspect.signature(async_openai).parameters
+    return "default_headers" in inspect.signature(OpenAI).parameters
+
+
+def _normalize_provider_family(provider: str) -> ProviderFamily:
+    """把配置 provider 归一为 SDK family。"""
+
+    if provider in {"openai", "openrouter"}:
+        return "openai"
+    if provider == "anthropic":
+        return "anthropic"
+    raise LLFactoryError(f"不支持的 provider: {provider}")
+
+
+def _normalize_type(provider_type: str) -> ProviderType:
+    """校验并归一 type 参数。"""
+
+    if provider_type in {"openai", "openrouter", "anthropic", "any"}:
+        return cast(ProviderType, provider_type)
+    raise LLFactoryError(f"type 仅支持 openai/openrouter/anthropic/any，不支持: {provider_type}")
+
+
+def _type_matches_provider(provider_type: ProviderType, node: RuntimeNode) -> bool:
+    """判断 type 过滤条件是否匹配节点 provider。"""
+
+    if provider_type == "any":
+        return True
+    node_family = _normalize_provider_family(node.provider)
+    if provider_type in {"openai", "openrouter"}:
+        return node_family == "openai"
+    return node_family == "anthropic"
 
 
 @dataclass
 class LLFactory:
-    """基于运行时活动节点构造模型实例的轻量工厂。"""
+    """从运行时节点构建 SDK client 的轻量工厂。"""
 
-    provider: str = "openai"
     logger: _LoggerProtocol | None = None
 
-    def create(self, node: RuntimeNode | None = None, tier: AgentTier = "small") -> Model[object]:
-        """创建并返回当前活动节点对应的 PydanticAI 模型。"""
+    def create_client(
+        self,
+        *,
+        model: str | None = None,
+        type: ProviderType = "any",
+        model_size: AgentTier = "small",
+    ) -> SyncLLMClient:
+        """按 model/type/model_size 选择节点并构建同步 SDK client。"""
 
-        return self.create_bundle(node=node, tier=tier).model
+        runtime_node = self._select_valid_node(get_llm_runtime(), model=model, provider_type=type, tier=model_size)
+        return self.create_client_for_node(runtime_node)
 
-    def create_bundle(self, node: RuntimeNode | None = None, tier: AgentTier = "small") -> LLModelBundle:
-        """创建模型与可关闭客户端组合。"""
+    def create_client_for_node(self, node: RuntimeNode) -> SyncLLMClient:
+        """按已选 RuntimeNode 构建同步 SDK client。"""
 
-        runtime_node = node or self._select_valid_node(get_llm_runtime(), tier=tier)
-        if node is not None:
-            probe_runtime_node(node)
-        active_logger = self.logger or _get_logger()
-        active_logger.info(
-            "LLM 选择节点: name=%s provider=%s base_url=%s model=%s",
-            runtime_node.name,
-            runtime_node.provider,
-            runtime_node.base_url,
-            runtime_node.model,
-        )
-        pydantic_ai_models_openai = cast(
-            _PydanticAIModelsOpenAIModule,
-            importlib.import_module("pydantic_ai.models.openai"),
-        )
-        pydantic_ai_providers_openai = cast(
-            _PydanticAIProvidersOpenAIModule,
-            importlib.import_module("pydantic_ai.providers.openai"),
-        )
-        openai_module = cast(_OpenAIModule, importlib.import_module("openai"))
+        probe_runtime_node(node)
+        self._log_node(node)
+        provider_family = _normalize_provider_family(node.provider)
+        if provider_family == "openai":
+            return self._create_openai_client(node)
+        return self._create_anthropic_client(node)
 
-        async_openai = openai_module.AsyncOpenAI
-        openai_responses_model = pydantic_ai_models_openai.OpenAIResponsesModel
-        openai_provider = pydantic_ai_providers_openai.OpenAIProvider
+    async def create_async_client(
+        self,
+        *,
+        model: str | None = None,
+        type: ProviderType = "any",
+        model_size: AgentTier = "small",
+    ) -> AsyncLLMClient:
+        """按 model/type/model_size 选择节点并构建异步 SDK client。"""
 
-        if runtime_node.extra_headers and not _supports_default_headers():
-            raise LLFactoryError("当前环境的 OpenAI 客户端不支持 extra_headers，无法安全传递请求头")
+        runtime_node = self._select_valid_node(get_llm_runtime(), model=model, provider_type=type, tier=model_size)
+        return await self.create_async_client_for_node(runtime_node)
 
-        openai_client = async_openai(
-            base_url=runtime_node.base_url,
-            api_key=runtime_node.api_key,
-            timeout=float(runtime_node.timeout_seconds),
-            default_headers=runtime_node.extra_headers,
-        )
-        provider = openai_provider(openai_client=openai_client)
+    async def create_async_client_for_node(self, node: RuntimeNode) -> AsyncLLMClient:
+        """按已选 RuntimeNode 构建异步 SDK client。"""
 
-        model = openai_responses_model(
-            model_name=runtime_node.model,
-            provider=provider,
-            settings={"timeout": float(runtime_node.timeout_seconds)},
-        )
-        return LLModelBundle(model=model, client=cast(_ClosableAsyncClient, openai_client))
+        probe_runtime_node(node)
+        self._log_node(node)
+        provider_family = _normalize_provider_family(node.provider)
+        if provider_family == "openai":
+            return self._create_async_openai_client(node)
+        return self._create_async_anthropic_client(node)
 
-    def _select_valid_node(self, runtime: LLRuntime, tier: AgentTier) -> RuntimeNode:
+    def _select_valid_node(
+        self,
+        runtime: LLRuntime,
+        *,
+        model: str | None,
+        provider_type: ProviderType,
+        tier: AgentTier,
+    ) -> RuntimeNode:
         """选择并探测当前可用节点，失败时切换到下一个节点。"""
 
+        normalized_type = _normalize_type(provider_type)
         while True:
-            runtime_node = runtime.get_active_node(tier)
+            runtime_node = self._find_candidate_node(runtime, model=model, provider_type=normalized_type, tier=tier)
             try:
                 probe_runtime_node(runtime_node)
             except Exception as exc:
@@ -173,3 +142,102 @@ class LLFactory:
                     raise
                 continue
             return runtime_node
+
+    def _find_candidate_node(
+        self,
+        runtime: LLRuntime,
+        *,
+        model: str | None,
+        provider_type: ProviderType,
+        tier: AgentTier,
+    ) -> RuntimeNode:
+        """从指定 tier 的可用节点中按条件选出第一个候选节点。"""
+
+        candidates = [
+            node
+            for node in runtime.available_nodes_for_tier(tier)
+            if _type_matches_provider(provider_type, node) and _model_matches(model, node)
+        ]
+        if candidates:
+            return candidates[0]
+
+        available = ", ".join(
+            f"{node.name}/{node.provider}/{node.model}" for node in runtime.available_nodes_for_tier(tier)
+        )
+        filter_text = f"model={model or '*'}, type={provider_type}, model_size={tier}"
+        raise LLFactoryError(f"未找到匹配的 LLM 节点: {filter_text}；可用节点: {available}")
+
+    def _create_openai_client(self, node: RuntimeNode) -> SyncLLMClient:
+        """构建同步 OpenAI 兼容 client。"""
+
+        if node.extra_headers and not _supports_default_headers():
+            raise LLFactoryError("当前环境的 OpenAI 客户端不支持 extra_headers，无法安全传递请求头")
+        return OpenAI(
+            base_url=node.base_url,
+            api_key=node.api_key,
+            timeout=float(node.timeout_seconds),
+            default_headers=node.extra_headers,
+        )
+
+    def _create_async_openai_client(self, node: RuntimeNode) -> AsyncLLMClient:
+        """构建异步 OpenAI 兼容 client。"""
+
+        if node.extra_headers and not _supports_default_headers():
+            raise LLFactoryError("当前环境的 OpenAI 客户端不支持 extra_headers，无法安全传递请求头")
+        return AsyncOpenAI(
+            base_url=node.base_url,
+            api_key=node.api_key,
+            timeout=float(node.timeout_seconds),
+            default_headers=node.extra_headers,
+        )
+
+    def _create_anthropic_client(self, node: RuntimeNode) -> SyncLLMClient:
+        """构建同步 Anthropic client。"""
+
+        return Anthropic(
+            base_url=node.base_url,
+            api_key=node.api_key,
+            timeout=float(node.timeout_seconds),
+            default_headers=node.extra_headers,
+        )
+
+    def _create_async_anthropic_client(self, node: RuntimeNode) -> AsyncLLMClient:
+        """构建异步 Anthropic client。"""
+
+        return AsyncAnthropic(
+            base_url=node.base_url,
+            api_key=node.api_key,
+            timeout=float(node.timeout_seconds),
+            default_headers=node.extra_headers,
+        )
+
+    def _log_node(self, node: RuntimeNode) -> None:
+        """记录最终选中的节点。"""
+
+        active_logger = self.logger or _get_logger()
+        active_logger.info(
+            "LLM 选择节点: name=%s provider=%s base_url=%s model=%s",
+            node.name,
+            node.provider,
+            node.base_url,
+            node.model,
+        )
+
+
+def _model_matches(model: str | None, node: RuntimeNode) -> bool:
+    """判断 model 参数是否匹配节点 name 或 model。"""
+
+    if model is None or not model.strip():
+        return True
+    normalized_model = model.strip()
+    return node.name == normalized_model or node.model == normalized_model
+
+
+__all__ = [
+    "LLFactory",
+    "LLFactoryError",
+    "AsyncLLMClient",
+    "ProviderFamily",
+    "ProviderType",
+    "SyncLLMClient",
+]
