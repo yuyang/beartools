@@ -60,6 +60,15 @@ agent:
       model: "gpt-5.4"
       api_key: "@get agent.naiba.key"
       timeout_seconds: 30
+
+    - name: "huoshanp1"
+      provider: "anthropic"
+      base_url: "https://ark.cn-beijing.volces.com/api/coding"
+      model: "Doubao-Seed-2.0-pro"
+      api_key: "@get agent.vplan.key"
+      extra_headers: {}
+      timeout_seconds: 35
+
    
     - name: "laozhang"
       provider: "openai"
@@ -69,6 +78,13 @@ agent:
       timeout_seconds: 30
 
   small:
+    - name: "huoshans1"
+      provider: "anthropic"
+      base_url: "https://ark.cn-beijing.volces.com/api/coding"
+      model: "Doubao-Seed-2.0-lite"
+      api_key: "@get agent.vplan.key"
+      extra_headers: {}
+      timeout_seconds: 25
 
     - name: "aiba-1"
       provider: "openai"
