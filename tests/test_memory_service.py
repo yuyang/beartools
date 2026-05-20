@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pytest import MonkeyPatch
 
 from beartools.memory.models import CommandMemoryInput
 from beartools.memory.prompts import build_command_memory_prompt, build_daily_summary_prompt
@@ -39,6 +40,10 @@ class _FakeDailySummarizer:
     def summarize_day(self, day_content: str) -> str:
         self.calls.append(day_content)
         return "- 今天主要在做：验证记忆系统\n- 关键结果：summary 已生成\n- 未完成/后续：继续测试"
+
+
+def _fake_openai_responses_model(client: object, **kwargs: object) -> str:
+    return "fake-model"
 
 
 class _FakeAsyncClient:
@@ -230,11 +235,34 @@ def test_generate_daily_summary_errors_when_day_file_missing(tmp_path: Path) -> 
         )
 
 
+def test_generate_daily_summary_rejects_today_or_future_date(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    day_dir = tmp_path / "day"
+    day_dir.mkdir(parents=True)
+    (day_dir / "2026-05-13.md").write_text("today day", encoding="utf-8")
+    (day_dir / "2026-05-14.md").write_text("future day", encoding="utf-8")
+    monkeypatch.setattr(memory_service, "today", lambda: date(2026, 5, 13))
+
+    with pytest.raises(ValueError, match="不能处理今天或未来日期"):
+        generate_daily_summary(
+            memory_root=tmp_path,
+            target_date=date(2026, 5, 13),
+            summarizer=_FakeDailySummarizer(),
+        )
+    with pytest.raises(ValueError, match="不能处理今天或未来日期"):
+        generate_daily_summary(
+            memory_root=tmp_path,
+            target_date=date(2026, 5, 14),
+            summarizer=_FakeDailySummarizer(),
+        )
+
+
 def test_append_missing_daily_summaries_fills_only_existing_day_without_overwrite(tmp_path: Path) -> None:
     day_dir = tmp_path / "day"
     day_dir.mkdir(parents=True)
+    (day_dir / "2026-04-30.md").write_text("outside range", encoding="utf-8")
     (day_dir / "2026-05-01.md").write_text("day one", encoding="utf-8")
     (day_dir / "2026-05-03.md").write_text("day three", encoding="utf-8")
+    (day_dir / "2026-05-04.md").write_text("today day", encoding="utf-8")
     summary_dir = tmp_path / "summary"
     summary_dir.mkdir(parents=True)
     existing_summary = summary_dir / "2026-05-03.md"
@@ -243,15 +271,29 @@ def test_append_missing_daily_summaries_fills_only_existing_day_without_overwrit
 
     created = append_missing_daily_summaries(
         memory_root=tmp_path,
-        month="2026-05",
+        start_date=date(2026, 5, 1),
+        end_date=date(2026, 5, 3),
         today=date(2026, 5, 4),
         summarizer=summarizer,
     )
 
     assert created == [tmp_path / "summary" / "2026-05-01.md"]
+    assert not (tmp_path / "summary" / "2026-04-30.md").exists()
     assert (tmp_path / "summary" / "2026-05-01.md").exists()
+    assert not (tmp_path / "summary" / "2026-05-04.md").exists()
     assert existing_summary.read_text(encoding="utf-8") == "保留旧 summary"
     assert summarizer.calls == ["day one"]
+
+
+def test_append_missing_daily_summaries_rejects_today_or_future_end_date(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="不能处理今天或未来日期"):
+        append_missing_daily_summaries(
+            memory_root=tmp_path,
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 4),
+            today=date(2026, 5, 4),
+            summarizer=_FakeDailySummarizer(),
+        )
 
 
 def test_memory_prompts_are_managed_in_prompt_directory() -> None:
@@ -277,7 +319,7 @@ def test_llm_command_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
     monkeypatch.setattr(memory_service, "AsyncOpenAI", _FakeAsyncClient)
-    monkeypatch.setattr(memory_service, "create_openai_responses_model", lambda client, **kwargs: "fake-model")
+    monkeypatch.setattr(memory_service, "create_openai_responses_model", _fake_openai_responses_model)
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
 
     summary = memory_service._LLMCommandSummarizer().summarize_command(_build_memory_input())
@@ -298,7 +340,7 @@ def test_llm_daily_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
     monkeypatch.setattr(memory_service, "AsyncOpenAI", _FakeAsyncClient)
-    monkeypatch.setattr(memory_service, "create_openai_responses_model", lambda client, **kwargs: "fake-model")
+    monkeypatch.setattr(memory_service, "create_openai_responses_model", _fake_openai_responses_model)
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
 
     summary = memory_service._LLMDailySummarizer().summarize_day("day content")

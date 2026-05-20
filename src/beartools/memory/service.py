@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import calendar
 from dataclasses import replace
 from datetime import date, timedelta
 import os
@@ -95,8 +94,18 @@ def append_command_memory(
     return day_path
 
 
-def generate_daily_summary(*, memory_root: Path, target_date: date, summarizer: DailySummarizer) -> Path:
+def generate_daily_summary(
+    *,
+    memory_root: Path,
+    target_date: date,
+    summarizer: DailySummarizer,
+    current_day: date | None = None,
+) -> Path:
     """根据 day 记忆生成或覆盖当天 summary。"""
+
+    resolved_current_day = current_day or today()
+    if target_date >= resolved_current_day:
+        raise ValueError("不能处理今天或未来日期")
 
     day_path = memory_root / "day" / f"{target_date.isoformat()}.md"
     if not day_path.exists():
@@ -113,39 +122,34 @@ def generate_daily_summary(*, memory_root: Path, target_date: date, summarizer: 
 def append_missing_daily_summaries(
     *,
     memory_root: Path,
-    month: str,
+    start_date: date,
+    end_date: date,
     today: date,
     summarizer: DailySummarizer,
 ) -> list[Path]:
-    """补齐指定月份中已有 day 但缺失的 summary。"""
+    """补齐日期范围内已有 day 但缺失的 summary。"""
 
-    year, month_number = parse_month(month)
-    if (year, month_number) > (today.year, today.month):
-        raise ValueError("不能处理未来月份")
+    if start_date > end_date:
+        raise ValueError("开始日期不能晚于结束日期")
+    if end_date >= today:
+        raise ValueError("不能处理今天或未来日期")
 
-    last_day = _resolve_append_last_day(year=year, month_number=month_number, today=today)
     created: list[Path] = []
-    current = date(year, month_number, 1)
-    while current <= last_day:
+    current = start_date
+    while current <= end_date:
         day_path = memory_root / "day" / f"{current.isoformat()}.md"
         summary_path = memory_root / "summary" / f"{current.isoformat()}.md"
         if day_path.exists() and not summary_path.exists():
-            created.append(generate_daily_summary(memory_root=memory_root, target_date=current, summarizer=summarizer))
+            created.append(
+                generate_daily_summary(
+                    memory_root=memory_root,
+                    target_date=current,
+                    summarizer=summarizer,
+                    current_day=today,
+                )
+            )
         current += timedelta(days=1)
     return created
-
-
-def parse_month(month: str) -> tuple[int, int]:
-    """解析 YYYY-MM 月份。"""
-
-    if re.fullmatch(r"\d{4}-\d{2}", month) is None:
-        raise ValueError("月份格式必须是 YYYY-MM")
-    year_text, month_text = month.split("-", maxsplit=1)
-    year = int(year_text)
-    month_number = int(month_text)
-    if month_number < 1 or month_number > 12:
-        raise ValueError("月份格式必须是 YYYY-MM")
-    return year, month_number
 
 
 def today() -> date:
@@ -170,15 +174,6 @@ def create_daily_summarizer() -> DailySummarizer:
     if fake_summary is not None:
         return _StaticDailySummarizer(fake_summary)
     return _LLMDailySummarizer()
-
-
-def _resolve_append_last_day(*, year: int, month_number: int, today: date) -> date:
-    """计算 append 处理到哪一天。"""
-
-    if year == today.year and month_number == today.month:
-        return today - timedelta(days=1)
-    _, last_day_number = calendar.monthrange(year, month_number)
-    return date(year, month_number, last_day_number)
 
 
 def _first_line(text: str) -> str:

@@ -62,8 +62,8 @@ beartools = "beartools.cli:_main_wrapper"
 | `beartools gmail` | `commands/gmail/command.py` | `gmail.py` | 拉取 Gmail 收件箱并生成摘要；发送纯文本邮件 |
 | `beartools newsnow` | `commands/newsnow/command.py` | `newsnow.py` | 通过本地浏览器抓取 NewsNow 可见卡片 |
 | `beartools codex` | `commands/codex/command.py` | `codex.py`、`codex_pic.py` | 执行 Codex Markdown、图片生成、图片编辑、批量图片任务 |
-| `beartools diary summary` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 使用 large 模型把某天 `memory/day/YYYY-MM-DD.md` 总结为 `memory/summary/YYYY-MM-DD.md` |
-| `beartools diary append` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 默认补齐本月 1 号到昨天已有 day 但缺失的 summary，默认不覆盖已有 summary |
+| `beartools diary summary` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 使用 large 模型把某天 `memory/day/YYYY-MM-DD.md` 总结为 `memory/summary/YYYY-MM-DD.md`；默认总结昨天，拒绝今天或未来日期 |
+| `beartools diary append` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 默认补齐最近 30 天到昨天为止已有 day 但缺失的 summary，默认不覆盖已有 summary |
 
 `cli._main_wrapper()` 对 `beartools bill <input> <from>` 做了特殊处理：当 `bill` 后第一个参数不是已知子命令时，自动插入 `run`，所以 `beartools bill file.xlsx 2601-` 等价于 `beartools bill run file.xlsx 2601-`。
 
