@@ -154,6 +154,12 @@ uv run mypy .
 - 仅执行本地Git操作（status/diff/log/add/commit/branch/stash/reset），push/pull等网络操作告知用户手动执行
 - 所有提交后统一告知用户执行`git push review`
 
+### Git 沙箱权限处理
+- 本机仓库中的 `.git` 写路径可能被沙箱拦截，常见表现是 `.git/index.lock: Operation not permitted`。
+- 对 `git add`、`git commit`、`git branch`、`git stash` 等会写入 `.git` 的本地 Git 命令，可以直接按工具规则申请沙箱外执行，不必先在沙箱内尝试一次。
+- 如果某条本地 Git 命令已经因 `.git` 权限失败，不要反复在沙箱内重试；应直接申请沙箱外执行同一条命令。
+- 不要把 `.git/index.lock`、`.git` 目录权限等沙箱问题误判为 Git 命令本身失败。
+
 ### Commit Message 规范
 格式：`前缀: 描述`（标题行长度不超过50字符）
 | 前缀 | 含义 | 适用场景 |
