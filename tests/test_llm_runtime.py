@@ -8,7 +8,7 @@ import pytest
 
 from beartools.config import AgentNodeConfig
 from beartools.llm import runtime as runtime_module
-from beartools.llm.runtime import RuntimeNode
+from beartools.llm.runtime import ANTHROPIC_PROBE_MAX_TOKENS, RuntimeNode
 
 
 def create_agent_node_config(
@@ -143,8 +143,8 @@ def test_probe_anthropic_node_uses_messages_api() -> None:
         runtime_module.probe_runtime_node(FakeAnthropicClient(), node.model)
 
     assert message_calls[0]["model"] == node.model
-    assert message_calls[0]["max_tokens"] == 1
-    assert message_calls[0]["messages"] == [{"role": "user", "content": "ping"}]
+    assert message_calls[0]["max_tokens"] == ANTHROPIC_PROBE_MAX_TOKENS
+    assert message_calls[0]["messages"] == [{"role": "user", "content": "只输出 pong"}]
 
 
 def test_probe_anthropic_node_rejects_response_without_text_content() -> None:
@@ -203,5 +203,5 @@ async def test_probe_async_anthropic_node_uses_async_messages_api() -> None:
         await runtime_module.probe_async_runtime_node(FakeAsyncAnthropicClient(), node.model)
 
     assert message_calls[0]["model"] == node.model
-    assert message_calls[0]["max_tokens"] == 1
-    assert message_calls[0]["messages"] == [{"role": "user", "content": "ping"}]
+    assert message_calls[0]["max_tokens"] == ANTHROPIC_PROBE_MAX_TOKENS
+    assert message_calls[0]["messages"] == [{"role": "user", "content": "只输出 pong"}]

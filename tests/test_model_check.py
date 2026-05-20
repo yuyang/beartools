@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from anthropic.types import Message, TextBlock
 from typer.testing import CliRunner
 
 from beartools.cli import app
@@ -53,8 +54,44 @@ class _FakeClient:
         self.close()
 
 
+class _FakeMessages:
+    def __init__(self, outputs: list[str]) -> None:
+        self.outputs = outputs
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs: object) -> Message:
+        self.calls.append(kwargs)
+        output = self.outputs.pop(0)
+        text_block = TextBlock.model_construct(text=output, type="text")
+        return Message.model_construct(
+            id="msg_1",
+            content=[text_block],
+            model="claude-test",
+            role="assistant",
+            stop_reason="end_turn",
+            stop_sequence=None,
+            type="message",
+            usage=None,
+        )
+
+
+class _FakeAnthropicClient:
+    def __init__(self, outputs: list[str]) -> None:
+        self.messages = _FakeMessages(outputs)
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> _FakeAnthropicClient:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, exc_tb: object) -> None:
+        self.close()
+
+
 class _FakeLLFactory:
-    clients: list[_FakeClient] = []
+    clients: list[_FakeClient | _FakeAnthropicClient] = []
     requests: list[tuple[str, str]] = []
     candidates: list[LLMCandidate] = []
 
@@ -62,16 +99,18 @@ class _FakeLLFactory:
         del type
         return [candidate for candidate in self.candidates if candidate.tier == model_size]
 
-    def create_client(self, *, name: str, model_size: str) -> _FakeClient:
+    def create_client(self, *, name: str, model_size: str) -> _FakeClient | _FakeAnthropicClient:
         self.requests.append((name, model_size))
         return self.clients.pop(0)
 
 
-def _candidate(name: str = "small-1", tier: str = "small", model: str = "gpt-test") -> LLMCandidate:
+def _candidate(
+    name: str = "small-1", tier: str = "small", model: str = "gpt-test", provider: str = "openai"
+) -> LLMCandidate:
     return LLMCandidate(
         name=name,
         tier=tier,
-        provider="openai",
+        provider=provider,
         model=model,
         timeout_seconds=30,
     )
@@ -189,6 +228,29 @@ def test_run_model_check_for_node_summarizes_answers(monkeypatch) -> None:
     assert response_input[0]["role"] == "system"
     assert response_input[1]["role"] == "user"
     assert "只输出一个选项字母" in response_input[1]["content"]
+
+
+def test_run_model_check_for_anthropic_node_summarizes_answers(monkeypatch) -> None:
+    fake_client = _FakeAnthropicClient(["B"])
+    _FakeLLFactory.clients = [fake_client]
+    _FakeLLFactory.requests = []
+    monkeypatch.setattr("beartools.model_check.LLFactory", _FakeLLFactory)
+    monkeypatch.setattr("beartools.model_check.Anthropic", _FakeAnthropicClient)
+    question = ModelCheckQuestion(id="q1", question="1+1?", options={"A": "1", "B": "2"}, answer="B")
+
+    result = run_model_check_for_node(
+        tier="small",
+        node=_candidate(name="huoshan1", provider="anthropic", model="Doubao-Seed-2.0-lite"),
+        questions=[question],
+    )
+
+    assert result.correct_count == 1
+    assert _FakeLLFactory.requests == [("huoshan1", "small")]
+    assert fake_client.messages.calls[0]["model"] == "Doubao-Seed-2.0-lite"
+    assert fake_client.messages.calls[0]["temperature"] == 0
+    assert fake_client.messages.calls[0]["system"] == "你是一个严谨的选择题答题器，只输出一个选项字母。"
+    assert fake_client.messages.calls[0]["messages"][0]["role"] == "user"
+    assert "只输出一个选项字母" in fake_client.messages.calls[0]["messages"][0]["content"]
 
 
 def test_extract_response_text_from_output_items() -> None:

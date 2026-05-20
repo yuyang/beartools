@@ -10,10 +10,23 @@ from pathlib import Path
 import time
 from typing import Protocol, cast
 
+from anthropic import (
+    APIConnectionError as AnthropicAPIConnectionError,
+)
+from anthropic import (
+    APIStatusError as AnthropicAPIStatusError,
+)
+from anthropic import (
+    APITimeoutError as AnthropicAPITimeoutError,
+)
+from anthropic import (
+    Anthropic,
+)
+from anthropic.types import Message
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from beartools.llm.factory import LLFactory, LLMCandidate
-from beartools.llm.runtime import AgentTier
+from beartools.llm.runtime import AgentTier, SyncLLMClient
 
 DEFAULT_MODEL_CHECK_QUESTIONS_PATH = Path("check/questions.yaml")
 DEFAULT_MODEL_CHECK_OUTPUT_DIR = Path("output")
@@ -43,6 +56,9 @@ class _ResponseOutputItemWithContent(Protocol):
 
 class _ResponseContentPartWithText(Protocol):
     text: object
+
+
+MODEL_CHECK_ANTHROPIC_MAX_TOKENS = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,6 +355,13 @@ def _extract_content_part_text(part: object) -> str:
     return ""
 
 
+def _extract_anthropic_message_text(message: Message) -> str:
+    """从 Anthropic Messages API 响应中提取文本。"""
+
+    text_parts = [part.text for part in message.content if part.type == "text" and part.text.strip()]
+    return "".join(text_parts).strip()
+
+
 def parse_model_choice(raw_output: str, valid_options: set[str]) -> str | None:
     """从模型输出中提取选项字母。"""
 
@@ -348,17 +371,7 @@ def parse_model_choice(raw_output: str, valid_options: set[str]) -> str | None:
     return None
 
 
-def _ask_question(client: OpenAI, node: LLMCandidate, question: ModelCheckQuestion) -> ModelCheckAnswer:
-    prompt = format_question_prompt(question)
-    response = client.responses.create(
-        model=node.model,
-        input=[
-            {"role": "system", "content": "你是一个严谨的选择题答题器，只输出一个选项字母。"},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0,
-    )
-    raw_output = _extract_response_text(response)
+def _answer_from_raw_output(question: ModelCheckQuestion, raw_output: str) -> ModelCheckAnswer:
     predicted_answer = parse_model_choice(raw_output, set(question.options.keys()))
     return ModelCheckAnswer(
         question_id=question.id,
@@ -369,8 +382,41 @@ def _ask_question(client: OpenAI, node: LLMCandidate, question: ModelCheckQuesti
     )
 
 
+def _ask_openai_question(client: OpenAI, node: LLMCandidate, question: ModelCheckQuestion) -> ModelCheckAnswer:
+    prompt = format_question_prompt(question)
+    response = client.responses.create(
+        model=node.model,
+        input=[
+            {"role": "system", "content": "你是一个严谨的选择题答题器，只输出一个选项字母。"},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0,
+    )
+    return _answer_from_raw_output(question, _extract_response_text(response))
+
+
+def _ask_anthropic_question(client: Anthropic, node: LLMCandidate, question: ModelCheckQuestion) -> ModelCheckAnswer:
+    prompt = format_question_prompt(question)
+    message = client.messages.create(
+        model=node.model,
+        max_tokens=MODEL_CHECK_ANTHROPIC_MAX_TOKENS,
+        system="你是一个严谨的选择题答题器，只输出一个选项字母。",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+    )
+    return _answer_from_raw_output(question, _extract_anthropic_message_text(message))
+
+
+def _ask_question(client: SyncLLMClient, node: LLMCandidate, question: ModelCheckQuestion) -> ModelCheckAnswer:
+    if isinstance(client, Anthropic):
+        return _ask_anthropic_question(client, node, question)
+    return _ask_openai_question(client, node, question)
+
+
 def _format_error(error: BaseException) -> str:
     if isinstance(error, APIStatusError):
+        return f"{type(error).__name__}(status={error.status_code})"
+    if isinstance(error, AnthropicAPIStatusError):
         return f"{type(error).__name__}(status={error.status_code})"
     return type(error).__name__
 
@@ -390,8 +436,6 @@ def run_model_check_for_node(
 
     start_time = time.time()
     client = LLFactory().create_client(name=node.name, model_size=tier)
-    if not isinstance(client, OpenAI):
-        raise RuntimeError("model check 当前只支持 OpenAI 兼容 client")
     with client:
         answers: list[ModelCheckAnswer] = []
         total_steps = total_nodes * len(questions)
@@ -412,7 +456,15 @@ def run_model_check_for_node(
                 )
             try:
                 answer = _ask_question(client, node, question)
-            except (APIConnectionError, APITimeoutError, APIStatusError, TimeoutError) as exc:
+            except (
+                APIConnectionError,
+                APITimeoutError,
+                APIStatusError,
+                AnthropicAPIConnectionError,
+                AnthropicAPITimeoutError,
+                AnthropicAPIStatusError,
+                TimeoutError,
+            ) as exc:
                 answer = ModelCheckAnswer(
                     question_id=question.id,
                     expected_answer=question.answer,

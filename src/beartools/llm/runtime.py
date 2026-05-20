@@ -12,6 +12,7 @@ from beartools.config import AgentNodeConfig
 
 AgentTier = Literal["large", "small"]
 ProviderType = Literal["openai", "anthropic", "any"]
+ANTHROPIC_PROBE_MAX_TOKENS = 64
 type SyncLLMClient = OpenAI | Anthropic
 type AsyncLLMClient = AsyncOpenAI | AsyncAnthropic
 
@@ -97,8 +98,8 @@ def _probe_anthropic_client(client: Anthropic, model: str) -> None:
 
     message = client.messages.create(
         model=model,
-        max_tokens=1,
-        messages=[{"role": "user", "content": "ping"}],
+        max_tokens=ANTHROPIC_PROBE_MAX_TOKENS,
+        messages=[{"role": "user", "content": "只输出 pong"}],
     )
     _ensure_anthropic_message_has_text(message)
 
@@ -114,8 +115,8 @@ async def _probe_async_openai_client(client: AsyncOpenAI, model: str) -> None:
 async def _probe_async_anthropic_client(client: AsyncAnthropic, model: str) -> None:
     message = await client.messages.create(
         model=model,
-        max_tokens=1,
-        messages=[{"role": "user", "content": "ping"}],
+        max_tokens=ANTHROPIC_PROBE_MAX_TOKENS,
+        messages=[{"role": "user", "content": "只输出 pong"}],
     )
     _ensure_anthropic_message_has_text(message)
 
