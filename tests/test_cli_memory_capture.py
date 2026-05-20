@@ -96,6 +96,27 @@ def test_wrapper_records_diary_command_itself(tmp_path: Path) -> None:
     assert "fake command summary" in today_text
 
 
+def test_wrapper_formats_missing_subcommand_without_traceback(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["BEARTOOLS_MEMORY_ROOT"] = str(tmp_path)
+    env["BEARTOOLS_MEMORY_FAKE_SUMMARY"] = "fake missing command summary"
+    env["BEARTOOLS_MEMORY_NOW"] = "2026-05-13T10:30:00"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "beartools.cli", "diary"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Error: Missing command." in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "Traceback" not in result.stdout
+
+
 def test_build_memory_now_from_environment(monkeypatch) -> None:
     from beartools.cli import _resolve_memory_now
 

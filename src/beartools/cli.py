@@ -163,6 +163,9 @@ def _main_wrapper() -> None:
     try:
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
             app(args=argv[1:], prog_name="beartools", standalone_mode=False)
+    except click.ClickException as exc:
+        exit_code = int(exc.exit_code)
+        exc.show(file=sys.stderr)
     except click.exceptions.Exit as exc:
         exit_code = int(exc.exit_code)
     except SystemExit as exc:
