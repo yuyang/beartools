@@ -22,6 +22,11 @@ from beartools.prompt import PromptManager
 class _FakeCommandSummarizer:
     def __init__(self) -> None:
         self.calls: list[CommandMemoryInput] = []
+        self.memory_model_info = memory_service._MemoryModelInfo(
+            tier="small",
+            provider="openai",
+            model="small-model",
+        )
 
     def summarize_command(self, memory_input: CommandMemoryInput) -> str:
         self.calls.append(memory_input)
@@ -36,6 +41,11 @@ class _FailingCommandSummarizer:
 class _FakeDailySummarizer:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.memory_model_info = memory_service._MemoryModelInfo(
+            tier="large",
+            provider="openai",
+            model="large-model",
+        )
 
     def summarize_day(self, day_content: str) -> str:
         self.calls.append(day_content)
@@ -44,6 +54,16 @@ class _FakeDailySummarizer:
 
 def _fake_openai_responses_model(client: object, **kwargs: object) -> str:
     return "fake-model"
+
+
+def _fake_anthropic_model(model_name: str, **kwargs: object) -> str:
+    del kwargs
+    return f"anthropic-model:{model_name}"
+
+
+class _FakeAnthropicProvider:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
 
 
 class _FakeAsyncClient:
@@ -59,22 +79,25 @@ class _FakeAsyncClient:
 
 class _FakeLLFactory:
     requested_tiers: list[str] = []
+    requested_types: list[str] = []
     close_calls: list[str] = []
+    provider = "openai"
 
     def list_candidates(self, *, type: str, model_size: str) -> list[SimpleNamespace]:
+        self.requested_types.append(type)
         return [
             SimpleNamespace(
                 name=f"{model_size}-name",
                 tier=model_size,
-                provider=type if type != "any" else "openai",
+                provider=self.provider,
                 model=f"{model_size}-model",
                 timeout_seconds=30,
             )
         ]
 
     async def create_async_client(self, *, name: str, type: str, model_size: str) -> _FakeAsyncClient:
-        del type
         del name
+        self.requested_types.append(type)
         self.requested_tiers.append(model_size)
         return _FakeAsyncClient(self.close_calls)
 
@@ -93,6 +116,13 @@ class _FakeMemoryAgent:
         return SimpleNamespace(output=self.output)
 
 
+class _FakeLogger:
+    messages: list[tuple[str, tuple[object, ...]]] = []
+
+    def info(self, message: str, *args: object) -> None:
+        self.messages.append((message, args))
+
+
 def _build_memory_input() -> CommandMemoryInput:
     return CommandMemoryInput(
         command="beartools doctor",
@@ -105,8 +135,12 @@ def _build_memory_input() -> CommandMemoryInput:
     )
 
 
-def test_append_command_memory_creates_day_file_and_uses_small_summary(tmp_path: Path) -> None:
+def test_append_command_memory_creates_day_file_and_uses_small_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     summarizer = _FakeCommandSummarizer()
+    _FakeLogger.messages = []
+    monkeypatch.setattr(memory_service, "_get_logger", lambda: _FakeLogger())
 
     output_path = append_command_memory(
         memory_root=tmp_path,
@@ -121,10 +155,20 @@ def test_append_command_memory_creates_day_file_and_uses_small_summary(tmp_path:
     assert "- 退出码：0" in text
     assert "- help：运行环境健康检查" in text
     assert summarizer.calls[0].stdout == "doctor ok"
+    assert _FakeLogger.messages == [
+        (
+            "memory 写入完成: type=%s path=%s tier=%s provider=%s model=%s length=%s",
+            ("command", output_path, "small", "openai", "small-model", len(text)),
+        )
+    ]
 
 
-def test_append_command_memory_uses_help_summary_without_llm_for_help_command(tmp_path: Path) -> None:
+def test_append_command_memory_uses_help_summary_without_llm_for_help_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     summarizer = _FakeCommandSummarizer()
+    _FakeLogger.messages = []
+    monkeypatch.setattr(memory_service, "_get_logger", lambda: _FakeLogger())
     memory_input = CommandMemoryInput(
         command="beartools doctor --help",
         help_text="运行环境健康检查",
@@ -141,6 +185,12 @@ def test_append_command_memory_uses_help_summary_without_llm_for_help_command(tm
     assert "- 目的：查看 beartools 命令帮助" in text
     assert "- 结果：已输出帮助信息：运行环境健康检查" in text
     assert summarizer.calls == []
+    assert _FakeLogger.messages == [
+        (
+            "memory 写入完成: type=%s path=%s tier=%s provider=%s model=%s length=%s",
+            ("command", output_path, "none", "none", "help", len(text)),
+        )
+    ]
 
 
 def test_append_command_memory_strips_ansi_escape_from_console_output(tmp_path: Path) -> None:
@@ -192,7 +242,12 @@ def test_append_command_memory_appends_without_overwriting(tmp_path: Path) -> No
     assert "beartools diary summary --date 2026-05-10" in text
 
 
-def test_append_command_memory_writes_fallback_when_summarizer_fails(tmp_path: Path) -> None:
+def test_append_command_memory_writes_fallback_when_summarizer_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeLogger.messages = []
+    monkeypatch.setattr(memory_service, "_get_logger", lambda: _FakeLogger())
+
     output_path = append_command_memory(
         memory_root=tmp_path,
         memory_input=_build_memory_input(),
@@ -202,9 +257,19 @@ def test_append_command_memory_writes_fallback_when_summarizer_fails(tmp_path: P
     text = output_path.read_text(encoding="utf-8")
     assert "LLM 总结失败：模型不可用" in text
     assert "- 退出码：0" in text
+    assert _FakeLogger.messages == [
+        (
+            "memory 写入完成: type=%s path=%s tier=%s provider=%s model=%s length=%s",
+            ("command", output_path, "unknown", "fallback", "summarizer-error", len(text)),
+        )
+    ]
 
 
-def test_generate_daily_summary_uses_large_summarizer_and_overwrites_day_summary(tmp_path: Path) -> None:
+def test_generate_daily_summary_uses_large_summarizer_and_overwrites_day_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeLogger.messages = []
+    monkeypatch.setattr(memory_service, "_get_logger", lambda: _FakeLogger())
     day_file = tmp_path / "day" / "2026-05-10.md"
     day_file.parent.mkdir(parents=True)
     day_file.write_text("## 09:00:00 beartools doctor\n\n- 结果：doctor 已运行\n", encoding="utf-8")
@@ -224,6 +289,12 @@ def test_generate_daily_summary_uses_large_summarizer_and_overwrites_day_summary
     assert text.startswith("# 2026-05-10")
     assert "今天主要在做：验证记忆系统" in text
     assert summarizer.calls == ["## 09:00:00 beartools doctor\n\n- 结果：doctor 已运行\n"]
+    assert _FakeLogger.messages == [
+        (
+            "memory 写入完成: type=%s path=%s tier=%s provider=%s model=%s length=%s",
+            ("daily-summary", output_path, "large", "openai", "large-model", len(text)),
+        )
+    ]
 
 
 def test_generate_daily_summary_errors_when_day_file_missing(tmp_path: Path) -> None:
@@ -312,7 +383,9 @@ def test_memory_prompts_are_managed_in_prompt_directory() -> None:
 
 def test_llm_command_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeLLFactory.requested_tiers = []
+    _FakeLLFactory.requested_types = []
     _FakeLLFactory.close_calls = []
+    _FakeLLFactory.provider = "openai"
     _FakeMemoryAgent.created_models = []
     _FakeMemoryAgent.prompt_inputs = []
     _FakeMemoryAgent.output = "命令总结"
@@ -322,18 +395,58 @@ def test_llm_command_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(memory_service, "create_openai_responses_model", _fake_openai_responses_model)
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
 
-    summary = memory_service._LLMCommandSummarizer().summarize_command(_build_memory_input())
+    summarizer = memory_service._LLMCommandSummarizer()
+    summary = summarizer.summarize_command(_build_memory_input())
 
     assert summary == "命令总结"
     assert _FakeLLFactory.requested_tiers == ["small"]
+    assert _FakeLLFactory.requested_types == ["any", "any"]
     assert _FakeMemoryAgent.created_models == ["fake-model"]
     assert "beartools doctor" in _FakeMemoryAgent.prompt_inputs[0]
     assert _FakeLLFactory.close_calls == ["closed"]
+    assert summarizer.memory_model_info == memory_service._MemoryModelInfo(
+        tier="small",
+        provider="openai",
+        model="small-model",
+    )
+
+
+def test_llm_command_summarizer_supports_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeLLFactory.requested_tiers = []
+    _FakeLLFactory.requested_types = []
+    _FakeLLFactory.close_calls = []
+    _FakeLLFactory.provider = "anthropic"
+    _FakeMemoryAgent.created_models = []
+    _FakeMemoryAgent.prompt_inputs = []
+    _FakeMemoryAgent.output = "命令总结"
+
+    monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
+    monkeypatch.setattr(memory_service, "AsyncAnthropic", _FakeAsyncClient)
+    monkeypatch.setattr(memory_service, "AnthropicModel", _fake_anthropic_model)
+    monkeypatch.setattr(memory_service, "AnthropicProvider", _FakeAnthropicProvider)
+    monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
+
+    summarizer = memory_service._LLMCommandSummarizer()
+    summary = summarizer.summarize_command(_build_memory_input())
+
+    assert summary == "命令总结"
+    assert _FakeLLFactory.requested_tiers == ["small"]
+    assert _FakeLLFactory.requested_types == ["any", "any"]
+    assert _FakeMemoryAgent.created_models == ["anthropic-model:small-model"]
+    assert "beartools doctor" in _FakeMemoryAgent.prompt_inputs[0]
+    assert _FakeLLFactory.close_calls == ["closed"]
+    assert summarizer.memory_model_info == memory_service._MemoryModelInfo(
+        tier="small",
+        provider="anthropic",
+        model="small-model",
+    )
 
 
 def test_llm_daily_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeLLFactory.requested_tiers = []
+    _FakeLLFactory.requested_types = []
     _FakeLLFactory.close_calls = []
+    _FakeLLFactory.provider = "openai"
     _FakeMemoryAgent.created_models = []
     _FakeMemoryAgent.prompt_inputs = []
     _FakeMemoryAgent.output = "日总结"
@@ -343,10 +456,48 @@ def test_llm_daily_summarizer_closes_model_bundle(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(memory_service, "create_openai_responses_model", _fake_openai_responses_model)
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
 
-    summary = memory_service._LLMDailySummarizer().summarize_day("day content")
+    summarizer = memory_service._LLMDailySummarizer()
+    summary = summarizer.summarize_day("day content")
 
     assert summary == "日总结"
     assert _FakeLLFactory.requested_tiers == ["large"]
+    assert _FakeLLFactory.requested_types == ["any", "any"]
     assert _FakeMemoryAgent.created_models == ["fake-model"]
     assert _FakeMemoryAgent.prompt_inputs == [build_daily_summary_prompt("day content")]
     assert _FakeLLFactory.close_calls == ["closed"]
+    assert summarizer.memory_model_info == memory_service._MemoryModelInfo(
+        tier="large",
+        provider="openai",
+        model="large-model",
+    )
+
+
+def test_llm_daily_summarizer_supports_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeLLFactory.requested_tiers = []
+    _FakeLLFactory.requested_types = []
+    _FakeLLFactory.close_calls = []
+    _FakeLLFactory.provider = "anthropic"
+    _FakeMemoryAgent.created_models = []
+    _FakeMemoryAgent.prompt_inputs = []
+    _FakeMemoryAgent.output = "日总结"
+
+    monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
+    monkeypatch.setattr(memory_service, "AsyncAnthropic", _FakeAsyncClient)
+    monkeypatch.setattr(memory_service, "AnthropicModel", _fake_anthropic_model)
+    monkeypatch.setattr(memory_service, "AnthropicProvider", _FakeAnthropicProvider)
+    monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
+
+    summarizer = memory_service._LLMDailySummarizer()
+    summary = summarizer.summarize_day("day content")
+
+    assert summary == "日总结"
+    assert _FakeLLFactory.requested_tiers == ["large"]
+    assert _FakeLLFactory.requested_types == ["any", "any"]
+    assert _FakeMemoryAgent.created_models == ["anthropic-model:large-model"]
+    assert _FakeMemoryAgent.prompt_inputs == [build_daily_summary_prompt("day content")]
+    assert _FakeLLFactory.close_calls == ["closed"]
+    assert summarizer.memory_model_info == memory_service._MemoryModelInfo(
+        tier="large",
+        provider="anthropic",
+        model="large-model",
+    )

@@ -3,23 +3,66 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 import os
 from pathlib import Path
 import re
 import shlex
+from typing import Protocol, runtime_checkable
 
+from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from pydantic_ai import Agent
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from beartools.llm.factory import LLFactory
 from beartools.llm.pydantic_openai import create_openai_responses_model
+from beartools.logger import get_logger
 from beartools.memory.models import CommandMemoryInput, CommandSummarizer, DailySummarizer
 from beartools.memory.prompts import build_command_memory_prompt, build_daily_summary_prompt
 
 MAX_CAPTURE_CHARS = 4000
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])")
+
+
+class _LoggerProtocol(Protocol):
+    def info(self, msg: str, *args: object) -> None: ...
+
+
+@runtime_checkable
+class _MemoryModelInfoCarrier(Protocol):
+    memory_model_info: _MemoryModelInfo
+
+
+@dataclass(frozen=True, slots=True)
+class _MemoryModelInfo:
+    """记录写入 memory 时使用的模型信息。"""
+
+    tier: str
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
+class _LLMSummaryResult:
+    """LLM 摘要文本与模型信息。"""
+
+    text: str
+    model_info: _MemoryModelInfo
+
+
+_UNKNOWN_MEMORY_MODEL_INFO = _MemoryModelInfo(tier="unknown", provider="unknown", model="unknown")
+_HELP_MEMORY_MODEL_INFO = _MemoryModelInfo(tier="none", provider="none", model="help")
+_FALLBACK_MEMORY_MODEL_INFO = _MemoryModelInfo(tier="unknown", provider="fallback", model="summarizer-error")
+
+
+def _get_logger() -> _LoggerProtocol:
+    """返回 memory 模块日志器。"""
+
+    return get_logger(__name__)
 
 
 def get_memory_root() -> Path:
@@ -60,12 +103,15 @@ def append_command_memory(
     day_path.parent.mkdir(parents=True, exist_ok=True)
     if _is_help_command(safe_input.command):
         summary = _build_help_command_summary(safe_input.help_text)
+        model_info = _HELP_MEMORY_MODEL_INFO
     else:
         try:
             summary = summarizer.summarize_command(safe_input).strip()
+            model_info = _extract_memory_model_info(summarizer, fallback=_UNKNOWN_MEMORY_MODEL_INFO)
         except Exception as exc:
             # 摘要模型失败不能影响原命令结果；这里保留 fallback 记忆。
             summary = f"- 目的：记录 beartools 命令执行\n- 结果：LLM 总结失败：{exc}"
+            model_info = _FALLBACK_MEMORY_MODEL_INFO
 
     entry = "\n".join(
         [
@@ -91,6 +137,7 @@ def append_command_memory(
     )
     with day_path.open("a", encoding="utf-8") as file_obj:
         file_obj.write(entry)
+    _log_memory_written(kind="command", path=day_path, model_info=model_info, length=len(entry))
     return day_path
 
 
@@ -115,7 +162,14 @@ def generate_daily_summary(
     summary = summarizer.summarize_day(day_content).strip()
     summary_path = memory_root / "summary" / f"{target_date.isoformat()}.md"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(f"# {target_date.isoformat()}\n\n{summary}\n", encoding="utf-8")
+    output_text = f"# {target_date.isoformat()}\n\n{summary}\n"
+    summary_path.write_text(output_text, encoding="utf-8")
+    _log_memory_written(
+        kind="daily-summary",
+        path=summary_path,
+        model_info=_extract_memory_model_info(summarizer, fallback=_UNKNOWN_MEMORY_MODEL_INFO),
+        length=len(output_text),
+    )
     return summary_path
 
 
@@ -206,6 +260,7 @@ def _build_help_command_summary(help_text: str) -> str:
 class _StaticCommandSummarizer:
     def __init__(self, summary: str) -> None:
         self._summary = summary
+        self.memory_model_info = _MemoryModelInfo(tier="small", provider="static", model="fake-summary")
 
     def summarize_command(self, memory_input: CommandMemoryInput) -> str:
         return self._summary
@@ -214,52 +269,96 @@ class _StaticCommandSummarizer:
 class _StaticDailySummarizer:
     def __init__(self, summary: str) -> None:
         self._summary = summary
+        self.memory_model_info = _MemoryModelInfo(tier="large", provider="static", model="fake-summary")
 
     def summarize_day(self, day_content: str) -> str:
         return self._summary
 
 
 class _LLMCommandSummarizer:
+    def __init__(self) -> None:
+        self.memory_model_info = _UNKNOWN_MEMORY_MODEL_INFO
+
     def summarize_command(self, memory_input: CommandMemoryInput) -> str:
-        return asyncio.run(_summarize_command_async(memory_input))
+        result = asyncio.run(_summarize_command_async(memory_input))
+        self.memory_model_info = result.model_info
+        return result.text
 
 
-async def _summarize_command_async(memory_input: CommandMemoryInput) -> str:
+async def _summarize_command_async(memory_input: CommandMemoryInput) -> _LLMSummaryResult:
     """在同一事件循环内运行命令摘要并关闭模型客户端。"""
 
-    node = LLFactory().list_candidates(type="openai", model_size="small")[0]
-    client = await LLFactory().create_async_client(name=node.name, type="openai", model_size=node.tier)
-    if not isinstance(client, AsyncOpenAI):
-        raise RuntimeError("命令记忆摘要当前只支持 OpenAI 兼容 client")
+    factory = LLFactory()
+    node = factory.list_candidates(type="any", model_size="small")[0]
+    client = await factory.create_async_client(name=node.name, type="any", model_size=node.tier)
+    model_info = _MemoryModelInfo(tier=node.tier, provider=node.provider, model=node.model)
     async with client:
-        model = create_openai_responses_model(
-            client,
-            model_name=node.model,
-            timeout_seconds=float(node.timeout_seconds),
-        )
+        model = _build_pydantic_model(client, node.model, float(node.timeout_seconds))
         agent: Agent[None, str] = Agent(model=model, output_type=str)
         result = await agent.run(build_command_memory_prompt(memory_input))
-        return str(result.output)
+        return _LLMSummaryResult(text=str(result.output), model_info=model_info)
 
 
 class _LLMDailySummarizer:
+    def __init__(self) -> None:
+        self.memory_model_info = _UNKNOWN_MEMORY_MODEL_INFO
+
     def summarize_day(self, day_content: str) -> str:
-        return asyncio.run(_summarize_day_async(day_content))
+        result = asyncio.run(_summarize_day_async(day_content))
+        self.memory_model_info = result.model_info
+        return result.text
 
 
-async def _summarize_day_async(day_content: str) -> str:
+async def _summarize_day_async(day_content: str) -> _LLMSummaryResult:
     """在同一事件循环内运行日总结并关闭模型客户端。"""
 
-    node = LLFactory().list_candidates(type="openai", model_size="large")[0]
-    client = await LLFactory().create_async_client(name=node.name, type="openai", model_size=node.tier)
-    if not isinstance(client, AsyncOpenAI):
-        raise RuntimeError("日记忆摘要当前只支持 OpenAI 兼容 client")
+    factory = LLFactory()
+    node = factory.list_candidates(type="any", model_size="large")[0]
+    client = await factory.create_async_client(name=node.name, type="any", model_size=node.tier)
+    model_info = _MemoryModelInfo(tier=node.tier, provider=node.provider, model=node.model)
     async with client:
-        model = create_openai_responses_model(
-            client,
-            model_name=node.model,
-            timeout_seconds=float(node.timeout_seconds),
-        )
+        model = _build_pydantic_model(client, node.model, float(node.timeout_seconds))
         agent: Agent[None, str] = Agent(model=model, output_type=str)
         result = await agent.run(build_daily_summary_prompt(day_content))
-        return str(result.output)
+        return _LLMSummaryResult(text=str(result.output), model_info=model_info)
+
+
+def _build_pydantic_model(
+    client: object, model_name: str, timeout_seconds: float
+) -> OpenAIResponsesModel | AnthropicModel:
+    """根据 SDK client 构建 PydanticAI model。"""
+
+    if isinstance(client, AsyncOpenAI):
+        return create_openai_responses_model(
+            client,
+            model_name=model_name,
+            timeout_seconds=timeout_seconds,
+        )
+    if isinstance(client, AsyncAnthropic):
+        return AnthropicModel(
+            model_name,
+            provider=AnthropicProvider(anthropic_client=client),
+        )
+    raise RuntimeError("命令记忆摘要只支持 OpenAI 或 Anthropic async client")
+
+
+def _extract_memory_model_info(summarizer: object, *, fallback: _MemoryModelInfo) -> _MemoryModelInfo:
+    """从摘要器读取模型信息，兼容普通测试摘要器。"""
+
+    if isinstance(summarizer, _MemoryModelInfoCarrier):
+        return summarizer.memory_model_info
+    return fallback
+
+
+def _log_memory_written(*, kind: str, path: Path, model_info: _MemoryModelInfo, length: int) -> None:
+    """记录 memory 写入后的模型和长度。"""
+
+    _get_logger().info(
+        "memory 写入完成: type=%s path=%s tier=%s provider=%s model=%s length=%s",
+        kind,
+        path,
+        model_info.tier,
+        model_info.provider,
+        model_info.model,
+        length,
+    )

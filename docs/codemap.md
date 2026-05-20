@@ -68,7 +68,7 @@ beartools = "beartools.cli:_main_wrapper"
 
 `cli._main_wrapper()` 对 `beartools bill <input> <from>` 做了特殊处理：当 `bill` 后第一个参数不是已知子命令时，自动插入 `run`，所以 `beartools bill file.xlsx 2601-` 等价于 `beartools bill run file.xlsx 2601-`。
 
-`cli._main_wrapper()` 也是 CLI 记忆系统入口：命令完成后根据 beartools 命令、CLI/console 显示信息和 help 生成单次记忆，写入 `memory/day/YYYY-MM-DD.md`。普通命令使用 small 模型生成摘要；`--help` / `-h` 命令直接用 help 信息生成摘要，不额外请求模型。`diary` 命令自身也会进入 day 记忆。测试和冒烟验证可通过 `BEARTOOLS_MEMORY_ROOT` 指向临时目录。
+`cli._main_wrapper()` 也是 CLI 记忆系统入口：命令完成后根据 beartools 命令、CLI/console 显示信息和 help 生成单次记忆，写入 `memory/day/YYYY-MM-DD.md`。普通命令使用 small 摘要模型，支持 OpenAI 或 Anthropic provider；`--help` / `-h` 命令直接用 help 信息生成摘要，不额外请求模型。`diary` 命令自身也会进入 day 记忆。测试和冒烟验证可通过 `BEARTOOLS_MEMORY_ROOT` 指向临时目录。
 
 ## 4. 核心模块职责
 
@@ -129,7 +129,8 @@ beartools = "beartools.cli:_main_wrapper"
 - `memory/service.py`
   - 计算 `memory/day/YYYY-MM-DD.md` 和 `memory/summary/YYYY-MM-DD.md` 路径。
   - 单次命令记忆追加写入 day 文件，保留模型摘要、退出码、help 摘要以及截断后的 console stdout/stderr。
-  - 单次命令记忆普通命令使用 runtime small OpenAI 摘要模型；`--help` / `-h` 命令直接用 help 信息生成摘要；`diary summary` 和 `diary append` 使用 runtime large OpenAI 模型。
+  - 单次命令记忆普通命令使用 `LLFactory(type="any", model_size="small")` 选择 OpenAI 或 Anthropic 摘要模型；`--help` / `-h` 命令直接用 help 信息生成摘要；`diary summary` 和 `diary append` 使用 `LLFactory(type="any", model_size="large")` 选择 OpenAI 或 Anthropic 模型。
+  - memory 写入成功后记录 info 日志，包含 memory 类型、路径、tier、provider、model 和写入字符数；不把 prompt、console 原文或密钥写入该日志。
   - `diary append` 只补齐缺失 summary，不覆盖已有 summary。
 
 ### 账单模块
