@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +26,8 @@ from beartools.codex_pic import (
     run_codex_picbatch,
     run_codex_picedit,
 )
-from beartools.config import CodexConfig, Config
+from beartools.codex_vplan import CodexVPlanResult, run_codex_vplan
+from beartools.config import CodexConfig, CodexVPlanConfig, Config
 
 runner = CliRunner()
 
@@ -256,6 +258,120 @@ def test_codex_pic_plays_system_notification_sound_after_success(tmp_path: Path)
 
     assert result.exit_code == 0
     mock_play_system_notification_sound.assert_called_once_with()
+
+
+def test_codex_vplan_prints_output_dir_and_plays_sound(tmp_path: Path) -> None:
+    md_file = tmp_path / "input" / "codex" / "cover.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成图片", encoding="utf-8")
+
+    def fake_run_codex_vplan(
+        *,
+        md_path: Path,
+        size: str = "2K",
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexVPlanResult:
+        assert md_path == md_file
+        assert size == "2K"
+        assert quality is None
+        assert output_format is None
+        output_dir = Path("output") / "vplan" / "cover"
+        return CodexVPlanResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "cover.webp",
+            trace_output_file=output_dir / "cover.trace.log",
+        )
+
+    with (
+        patch("beartools.commands.codex.command.run_codex_vplan", side_effect=fake_run_codex_vplan),
+        patch("beartools.commands.codex.command.play_system_notification_sound") as mock_play_system_notification_sound,
+    ):
+        result = runner.invoke(app, ["codex", "vplan", str(md_file)])
+
+    assert result.exit_code == 0
+    assert "结果目录: output/vplan/cover" in result.stdout
+    assert "图片已写入: output/vplan/cover/cover.webp" in result.stdout
+    assert "Trace 已写入: output/vplan/cover/cover.trace.log" in result.stdout
+    mock_play_system_notification_sound.assert_called_once_with()
+
+
+def test_codex_vplan_passes_compatible_options_but_business_may_ignore_output_format(tmp_path: Path) -> None:
+    md_file = tmp_path / "input" / "codex" / "poster.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成海报", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run_codex_vplan(
+        *,
+        md_path: Path,
+        size: str = "2K",
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexVPlanResult:
+        captured["md_path"] = md_path
+        captured["size"] = size
+        captured["quality"] = quality
+        captured["output_format"] = output_format
+        output_dir = Path("output") / "vplan" / "poster"
+        return CodexVPlanResult(
+            output_dir=output_dir,
+            image_output_file=output_dir / "poster.webp",
+            trace_output_file=output_dir / "poster.trace.log",
+        )
+
+    with (
+        patch("beartools.commands.codex.command.run_codex_vplan", side_effect=fake_run_codex_vplan),
+        patch("beartools.commands.codex.command.play_system_notification_sound"),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "codex",
+                "vplan",
+                str(md_file),
+                "--size",
+                "4K",
+                "--quality",
+                "high",
+                "--output-format",
+                "webp",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "md_path": md_file,
+        "size": "4K",
+        "quality": "high",
+        "output_format": "webp",
+    }
+
+
+def test_codex_vplan_does_not_play_sound_on_failure(tmp_path: Path) -> None:
+    md_file = tmp_path / "input" / "codex" / "broken.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成图片", encoding="utf-8")
+
+    def fake_run_codex_vplan(
+        *,
+        md_path: Path,
+        size: str = "2K",
+        quality: str | None = None,
+        output_format: str | None = None,
+    ) -> CodexVPlanResult:
+        del md_path, size, quality, output_format
+        raise RuntimeError("vplan boom")
+
+    with (
+        patch("beartools.commands.codex.command.run_codex_vplan", side_effect=fake_run_codex_vplan),
+        patch("beartools.commands.codex.command.play_system_notification_sound") as mock_play_system_notification_sound,
+    ):
+        result = runner.invoke(app, ["codex", "vplan", str(md_file)])
+
+    assert result.exit_code == 1
+    assert "错误: vplan boom" in result.stdout
+    mock_play_system_notification_sound.assert_not_called()
 
 
 def test_codex_picbatch_prints_mixed_results_and_keeps_exit_zero(tmp_path: Path) -> None:
@@ -1858,6 +1974,187 @@ def test_run_codex_pic_rejects_invalid_options(
         run_codex_pic(md_path=md_file, **kwargs)
 
 
+def test_run_codex_vplan_uses_refined_prompt_and_writes_url_extension(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    md_file = tmp_path / "input" / "codex" / "ark-cover.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成火山图片", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    captured: dict[str, object] = {}
+
+    async def fake_refine_codex_pic_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
+        captured["refine_prompt"] = prompt
+        captured["refine_model"] = config.model
+        captured["refine_client"] = client
+        return "精修后的 Ark 图片提示词"
+
+    class FakeImages:
+        def generate(self, **kwargs: object) -> object:
+            captured["generate_kwargs"] = kwargs
+            return type(
+                "FakeArkImageResponse",
+                (),
+                {
+                    "data": [type("FakeArkImageData", (), {"url": "https://example.com/generated/image.webp"})()],
+                    "model_dump": lambda _self: {
+                        "data": [{"url": "https://example.com/generated/image.webp"}],
+                    },
+                },
+            )()
+
+    class FakeArkClient:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            captured["ark_api_key"] = api_key
+            captured["ark_base_url"] = base_url
+            self.images = FakeImages()
+
+    class FakeRefineClient(_AsyncContextFakeClient):
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
+            captured["refine_api_key"] = api_key
+            captured["refine_base_url"] = base_url
+            captured["refine_timeout"] = timeout
+
+    def fake_download_image_bytes(url: str, timeout_seconds: int) -> bytes:
+        captured["download_url"] = url
+        captured["download_timeout_seconds"] = timeout_seconds
+        return b"webp-bytes"
+
+    monkeypatch.setattr("beartools.codex_vplan.OpenAI", FakeArkClient)
+    monkeypatch.setattr("beartools.codex_vplan.AsyncOpenAI", FakeRefineClient)
+    monkeypatch.setattr("beartools.codex_vplan.refine_codex_pic_prompt_async", fake_refine_codex_pic_prompt_async)
+    monkeypatch.setattr("beartools.codex_vplan._download_image_bytes", fake_download_image_bytes)
+    monkeypatch.setattr(
+        "beartools.codex_vplan.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://refine.example.com/v1",
+                api_key="refine-token",
+                model="grok-3-mini",
+                timeout_seconds=60,
+                vplan=CodexVPlanConfig(key="ark-secret"),
+            )
+        ),
+    )
+    caplog.set_level(logging.INFO, logger="beartools.codex_vplan")
+
+    result = run_codex_vplan(md_path=md_file, size="2K", quality="high", output_format="png")
+
+    assert captured["refine_prompt"] == "生成火山图片"
+    assert captured["refine_model"] == "grok-3-mini"
+    assert captured["refine_api_key"] == "refine-token"
+    assert captured["refine_base_url"] == "https://refine.example.com/v1"
+    assert captured["ark_api_key"] == "ark-secret"
+    assert captured["ark_base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+    assert captured["generate_kwargs"] == {
+        "model": "doubao-seedream-4-5-251128",
+        "prompt": "精修后的 Ark 图片提示词",
+        "size": "2K",
+        "response_format": "url",
+        "extra_body": {"watermark": False},
+    }
+    assert captured["download_url"] == "https://example.com/generated/image.webp"
+    assert captured["download_timeout_seconds"] == 600
+    assert result.image_output_file == Path("output") / "vplan" / "ark-cover" / "ark-cover.webp"
+    assert result.image_output_file.read_bytes() == b"webp-bytes"
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"status": "completed"' in trace_text
+    assert '"original_prompt": "生成火山图片"' in trace_text
+    assert '"refined_prompt": "精修后的 Ark 图片提示词"' in trace_text
+    assert '"quality": "high"' in trace_text
+    assert '"ignored_output_format": "png"' in trace_text
+    assert '"image_url": "https://example.com/generated/image.webp"' in trace_text
+    assert '"url_extension": ".webp"' in trace_text
+    assert '"url_extension_fallback": false' in trace_text
+    captured_output = capsys.readouterr().out
+    assert "开始优化做图提示词：ark-cover.md" in captured_output
+    assert "提示词优化完成：ark-cover.md，开始生成图片" in captured_output
+    assert "图片生成完成，开始写入结果文件：output/vplan/ark-cover/ark-cover.webp" in captured_output
+    assert "vplan 获取图片 URL" in caplog.text
+    assert "image_url=https://example.com/generated/image.webp" in caplog.text
+
+
+def test_run_codex_vplan_falls_back_to_png_when_url_has_no_image_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    md_file = tmp_path / "input" / "codex" / "ark-noext.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成火山图片", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_refine_codex_pic_prompt_async(prompt: str, config: CodexConfig, client: object) -> str:
+        del prompt, config, client
+        return "精修后的 Ark 图片提示词"
+
+    class FakeImages:
+        def generate(self, **kwargs: object) -> object:
+            del kwargs
+            return type(
+                "FakeArkImageResponse",
+                (),
+                {"data": [type("FakeArkImageData", (), {"url": "https://example.com/generated?id=123"})()]},
+            )()
+
+    class FakeArkClient:
+        def __init__(self, *, api_key: str, base_url: str) -> None:
+            del api_key, base_url
+            self.images = FakeImages()
+
+    class FakeRefineClient(_AsyncContextFakeClient):
+        def __init__(self, *, api_key: str, base_url: str, timeout: float | None = None) -> None:
+            del api_key, base_url, timeout
+
+    monkeypatch.setattr("beartools.codex_vplan.OpenAI", FakeArkClient)
+    monkeypatch.setattr("beartools.codex_vplan.AsyncOpenAI", FakeRefineClient)
+    monkeypatch.setattr("beartools.codex_vplan.refine_codex_pic_prompt_async", fake_refine_codex_pic_prompt_async)
+    monkeypatch.setattr("beartools.codex_vplan._download_image_bytes", lambda _url, _timeout_seconds: b"image-bytes")
+    monkeypatch.setattr(
+        "beartools.codex_vplan.get_config",
+        lambda: Config(
+            codex=CodexConfig(
+                base_url="https://refine.example.com/v1",
+                api_key="refine-token",
+                model="m",
+                vplan=CodexVPlanConfig(key="ark-secret"),
+            )
+        ),
+    )
+
+    result = run_codex_vplan(md_path=md_file)
+
+    assert result.image_output_file == Path("output") / "vplan" / "ark-noext" / "ark-noext.png"
+    trace_text = result.trace_output_file.read_text(encoding="utf-8")
+    assert '"url_extension": ".png"' in trace_text
+    assert '"url_extension_fallback": true' in trace_text
+
+
+def test_run_codex_vplan_requires_secret_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    md_file = tmp_path / "input" / "codex" / "missing-key.md"
+    md_file.parent.mkdir(parents=True)
+    md_file.write_text("生成图片", encoding="utf-8")
+    (tmp_path / "config").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "beartools.codex_vplan.get_config",
+        lambda: Config(codex=CodexConfig(base_url="https://refine.example.com/v1", api_key="refine-token", model="m")),
+    )
+
+    with pytest.raises(RuntimeError, match=r"codex\.vplan\.key"):
+        run_codex_vplan(md_path=md_file)
+
+
+def test_run_codex_vplan_rejects_non_markdown_file(tmp_path: Path) -> None:
+    text_file = tmp_path / "input" / "codex" / "banner.txt"
+    text_file.parent.mkdir(parents=True)
+    text_file.write_text("生成图片", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Markdown"):
+        run_codex_vplan(md_path=text_file)
+
+
 def test_execute_shell_commands_passes_cwd_and_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     executed: dict[str, object] = {}
 
@@ -1980,7 +2277,9 @@ def test_run_codex_markdown_happy_path_writes_trace_and_final_output(
     assert '"message": "部分回答"' in trace_text
 
 
-def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_refine_pic_prompt_uses_text_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     del tmp_path
     captured: dict[str, object] = {}
 
@@ -2016,6 +2315,7 @@ def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr("beartools.codex_pic._build_refine_instructions", lambda _name: "模板里的提示词")
 
     client = FakeClient(api_key="token", base_url="https://example.com/v1")
+    caplog.set_level(logging.INFO, logger="beartools.codex_pic")
     refined = asyncio.run(
         _refine_pic_prompt_async(
             "原始 markdown 提示词",
@@ -2034,6 +2334,8 @@ def test_refine_pic_prompt_uses_text_model(tmp_path: Path, monkeypatch: pytest.M
     agent_kwargs = captured["agent_kwargs"]
     assert isinstance(agent_kwargs, dict)
     assert agent_kwargs["instructions"] == "模板里的提示词"
+    assert "调用做图提示词润色模型: model=grok-3-mini original_prompt=原始 markdown 提示词" in caplog.text
+    assert "做图提示词润色完成: model=grok-3-mini refined_prompt=润色后的提示词" in caplog.text
 
 
 def test_run_codex_picbatch_collects_success_and_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

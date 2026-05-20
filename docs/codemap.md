@@ -25,6 +25,7 @@
 │   ├── record.py               # SQLite URL 记录管理
 │   ├── codex.py                # Codex Markdown 任务执行
 │   ├── codex_pic.py            # Codex 图片生成/编辑/批处理
+│   ├── codex_vplan.py          # Codex 火山 Ark URL 图片生成
 │   ├── gmail.py                # Gmail 拉取与摘要生成
 │   └── newsnow.py              # NewsNow 本地浏览器抓取
 ├── tests/                      # 单元测试
@@ -61,7 +62,7 @@ beartools = "beartools.cli:_main_wrapper"
 | `beartools fetch` | `commands/fetch/command.py` | `fetch.py`、`markdown.py`、`siyuan.py` | 抓取 URL 内容，生成 Markdown，可上传思源 |
 | `beartools gmail` | `commands/gmail/command.py` | `gmail.py` | 拉取 Gmail 收件箱并生成摘要；发送纯文本邮件 |
 | `beartools newsnow` | `commands/newsnow/command.py` | `newsnow.py` | 通过本地浏览器抓取 NewsNow 可见卡片 |
-| `beartools codex` | `commands/codex/command.py` | `codex.py`、`codex_pic.py` | 执行 Codex Markdown、图片生成、图片编辑、批量图片任务 |
+| `beartools codex` | `commands/codex/command.py` | `codex.py`、`codex_pic.py`、`codex_vplan.py` | 执行 Codex Markdown、图片生成、火山 Ark 图片生成、图片编辑、批量图片任务 |
 | `beartools diary summary` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 使用 large 模型把某天 `memory/day/YYYY-MM-DD.md` 总结为 `memory/summary/YYYY-MM-DD.md`；默认总结昨天，拒绝今天或未来日期 |
 | `beartools diary append` | `commands/diary/command.py` | `memory/service.py`、`prompts/cli_daily_summary.md`、`llm/factory.py` | 默认补齐最近 30 天到昨天为止已有 day 但缺失的 summary，默认不覆盖已有 summary |
 
@@ -175,7 +176,14 @@ beartools = "beartools.cli:_main_wrapper"
 - `codex_pic.py`
   - 图片生成、图片编辑和批量生成业务。
   - 支持 prompt refine、尺寸/质量/格式归一化、trace 脱敏、token usage 提取。
-  - 默认输出到 `out/pic/<stem>/` 或相关图片任务目录。
+  - 提供共享做图 prompt refine helper，供 `pic` 和 `vplan` 复用。
+  - 默认输出到 `output/pic/<stem>/` 或相关图片任务目录。
+- `codex_vplan.py`
+  - 火山 Ark URL 图片生成业务。
+  - 读取 Markdown 后先复用 `codex_pic.py` 的做图 prompt refine，再调用 Ark `doubao-seedream-4-5-251128`，从返回 URL 下载图片字节。
+  - API key 从 `get_config().codex.vplan.key` 读取；base URL 固定为 Ark 示例文档地址。
+  - `--quality` 仅写 trace，`--output-format` 被忽略；本地图片扩展名根据 Ark URL 后缀决定，无图片后缀时兜底 `.png`。
+  - 默认输出到 `output/vplan/<stem>/`，trace 不写 API key。
 
 ### 其他业务模块
 
@@ -230,6 +238,14 @@ beartools codex pic <md_path>
   -> codex_pic.py::run_codex_pic_async()
        -> prompt/manager.py 读取 refine prompt
        -> openai image API 生成图片
+
+beartools codex vplan <md_path>
+  -> commands/codex/command.py::codex_vplan()
+  -> codex_vplan.py::run_codex_vplan()
+  -> codex_vplan.py::run_codex_vplan_async()
+       -> codex_pic.py::refine_codex_pic_prompt_async()
+       -> Ark images.generate(response_format="url")
+       -> 下载返回 URL 并写入 output/vplan/<stem>/
        -> 写图片文件和 trace
 ```
 
@@ -292,7 +308,7 @@ beartools check eval <yaml_path> --tier small|large
 | `tests/test_bill_agent.py` | 账单 LLM agent 结构化输出 |
 | `tests/test_bill_command.py` | 账单 CLI 命令适配层 |
 | `tests/test_bill_status_mapping.py` | 状态映射加载、匹配、追加 |
-| `tests/test_codex_command.py` | Codex 命令和图片命令 |
+| `tests/test_codex_command.py` | Codex 命令、图片命令、vplan 和 novel 流程 |
 | `tests/test_clear.py` | 清理命令 |
 
 README 中提到的 CLI 集成测试入口为 `tests/test_cli_integration_commands.py`，但当前文件列表中没有该文件；如果要恢复集成测试，需要先确认是否已移动、未提交或尚未创建。
@@ -309,7 +325,7 @@ README 中提到的 CLI 集成测试入口为 `tests/test_cli_integration_comman
 | 日志 | `log/` |
 | URL 记录数据库 | `data/record/beartools.db` |
 | 账单输出 | `data/bill/*.normalized.xlsx`、`data/bill/*.analysis.xlsx` |
-| Codex 图片输出 | `out/pic/<stem>/` |
+| Codex 图片输出 | `output/pic/<stem>/` |
 | Prompt 模板 | `prompts/*.md` |
 
 ## 8. 变更落点速查
@@ -323,7 +339,7 @@ README 中提到的 CLI 集成测试入口为 `tests/test_cli_integration_comman
 | 新增 URL 抓取站点 | `fetch.py`、`commands/fetch/command.py`、`tests/test_fetch.py` |
 | 调整思源上传/导出 | `siyuan.py`、`commands/siyuan/command.py` |
 | 调整 Codex Markdown 执行 | `codex.py`、`commands/codex/command.py` |
-| 调整 Codex 图片生成 | `codex_pic.py`、`prompts/codex_pic_refine.md`、`prompts/codex_picedit_refine.md` |
+| 调整 Codex 图片生成 | `codex_pic.py`、`codex_vplan.py`、`prompts/codex_pic_refine.md`、`prompts/codex_picedit_refine.md` |
 | 调整 LLM 节点策略 | `config.py`、`llm/runtime.py`、`llm/factory.py` |
 | 调整模型选择题评测 | `model_check.py`、`commands/model/command.py`、`check/questions.yaml`、`tests/test_model_check.py` |
 | 调整 Prompt 模板系统 | `prompt/template.py`、`prompt/manager.py`、`prompts/` |

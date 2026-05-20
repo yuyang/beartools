@@ -651,6 +651,7 @@ agent:
         assert sample_data["agent"]["large"][0]["api_key"] == "@get agent.openai.key"
         assert sample_data["agent"]["small"][0]["api_key"] == "@get agent.openai.key"
         assert sample_data["codex"]["api_key"] == "@get codex.api_key"
+        assert sample_data["codex"]["vplan"]["key"] == "@get codex.vplan.key"
 
     def test_secrets_sample_contains_sensitive_values(self) -> None:
         sample_path = self.original_cwd / "config" / "beartools.secrets.yaml.sample"
@@ -659,6 +660,7 @@ agent:
         assert sample_data["siyuan"]["token"] == "REPLACE_ME"
         assert sample_data["agent"]["openai"]["key"] == "REPLACE_ME"
         assert sample_data["agent"]["zhizengzeng"]["key"] == "REPLACE_ME"
+        assert sample_data["codex"]["vplan"]["key"] == "REPLACE_ME"
 
     def test_load_config_parses_codex_section(self) -> None:
         self._write_config(
@@ -679,6 +681,8 @@ codex:
             """
 codex:
   api_key: "secret-key"
+  vplan:
+    key: "vplan-secret-key"
 """
         )
 
@@ -695,3 +699,4 @@ codex:
         assert config.codex.pic_quality == "medium"
         assert config.codex.pic_output_format == "webp"
         assert config.codex.pic_response_format == "b64_json"
+        assert config.codex.vplan.key == "vplan-secret-key"

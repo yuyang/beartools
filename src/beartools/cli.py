@@ -30,7 +30,7 @@ from beartools.commands.model import model_app
 from beartools.commands.newsnow import newsnow_app
 from beartools.commands.record import record_app
 from beartools.commands.siyuan import siyuan_app
-from beartools.logger import shutdown_logging
+from beartools.logger import get_logger, shutdown_logging
 from beartools.memory.models import CommandMemoryInput
 from beartools.memory.service import append_command_memory, create_command_summarizer, get_memory_root
 
@@ -157,19 +157,14 @@ def _main_wrapper() -> None:
     started_monotonic = time.monotonic()
     stdout_capture = _TeeTextCapture(sys.stdout)
     stderr_capture = _TeeTextCapture(sys.stderr)
-    exit_code = 0
 
     sys.argv = argv
     try:
-        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-            app(args=argv[1:], prog_name="beartools", standalone_mode=False)
-    except click.ClickException as exc:
-        exit_code = int(exc.exit_code)
-        exc.show(file=sys.stderr)
-    except click.exceptions.Exit as exc:
-        exit_code = int(exc.exit_code)
-    except SystemExit as exc:
-        exit_code = _coerce_exit_code(exc.code)
+        exit_code = _run_app_with_friendly_exceptions(
+            argv=argv,
+            stdout_capture=stdout_capture,
+            stderr_capture=stderr_capture,
+        )
     finally:
         sys.argv = original_argv
 
@@ -188,6 +183,51 @@ def _main_wrapper() -> None:
         duration_seconds=duration_seconds,
     )
     raise SystemExit(exit_code)
+
+
+def _run_app_with_friendly_exceptions(
+    *,
+    argv: list[str],
+    stdout_capture: _TeeTextCapture,
+    stderr_capture: _TeeTextCapture,
+) -> int:
+    """运行 Typer app，并把异常转换为 console 友好输出。"""
+
+    try:
+        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+            app(args=argv[1:], prog_name="beartools", standalone_mode=False)
+        return 0
+    except click.ClickException as exc:
+        exc.show(file=cast(TextIO, stderr_capture))
+        return int(exc.exit_code)
+    except click.exceptions.Exit as exc:
+        if exc.__cause__ is not None:
+            _log_cli_exception(exc.__cause__)
+        return int(exc.exit_code)
+    except SystemExit as exc:
+        return _coerce_exit_code(exc.code)
+    except Exception as exc:
+        _log_cli_exception(exc)
+        stderr_capture.write(f"{_format_cli_exception(exc)}\n")
+        return 1
+
+
+def _log_cli_exception(exc: BaseException) -> None:
+    """记录 CLI 未展示到 console 的完整异常。"""
+
+    try:
+        get_logger(__name__).error("beartools 命令执行失败", exc_info=(type(exc), exc, exc.__traceback__))
+    except (RuntimeError, ValueError, OSError):
+        pass
+
+
+def _format_cli_exception(exc: BaseException) -> str:
+    """格式化 console 友好的异常信息。"""
+
+    message = str(exc).strip()
+    if message:
+        return f"错误: {message}"
+    return f"错误: {type(exc).__name__}"
 
 
 def _resolve_memory_now() -> datetime:

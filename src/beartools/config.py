@@ -101,6 +101,13 @@ class GmailConfig:
 
 
 @dataclass
+class CodexVPlanConfig:
+    """Codex vplan 配置"""
+
+    key: str = ""
+
+
+@dataclass
 class CodexConfig:
     """Codex 配置"""
 
@@ -116,6 +123,7 @@ class CodexConfig:
     pic_quality: str = "high"
     pic_output_format: str = "png"
     pic_response_format: str = "b64_json"
+    vplan: CodexVPlanConfig = field(default_factory=CodexVPlanConfig)
 
 
 @dataclass
@@ -344,6 +352,7 @@ def _parse_codex_config(settings: _SettingsLike) -> CodexConfig:
     """解析 Codex 配置。"""
 
     codex_settings = _as_dict(settings.get("codex", {}), "codex")
+    vplan_settings = _as_dict(codex_settings.get("vplan", {}), "codex.vplan")
     return CodexConfig(
         base_url=str(codex_settings.get("base_url", "")),
         api_key=str(codex_settings.get("api_key", "")),
@@ -357,6 +366,7 @@ def _parse_codex_config(settings: _SettingsLike) -> CodexConfig:
         pic_quality=str(codex_settings.get("pic_quality", "high")),
         pic_output_format=str(codex_settings.get("pic_output_format", "png")),
         pic_response_format=str(codex_settings.get("pic_response_format", "b64_json")),
+        vplan=CodexVPlanConfig(key=_parse_api_key(vplan_settings.get("key", ""), "codex.vplan")),
     )
 
 

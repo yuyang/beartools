@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from typing import NoReturn
 
 
 def test_console_entrypoint_points_to_wrapper() -> None:
@@ -115,6 +116,45 @@ def test_wrapper_formats_missing_subcommand_without_traceback(tmp_path: Path) ->
     assert "Error: Missing command." in result.stderr
     assert "Traceback" not in result.stderr
     assert "Traceback" not in result.stdout
+
+
+def test_wrapper_formats_unhandled_exception_without_traceback(monkeypatch, capsys, tmp_path: Path) -> None:
+    from beartools import cli
+
+    recorded: dict[str, object] = {}
+    logged: list[BaseException] = []
+
+    def fake_app(*, args: list[str], prog_name: str, standalone_mode: bool) -> NoReturn:
+        assert args == ["boom"]
+        assert prog_name == "beartools"
+        assert standalone_mode is False
+        raise RuntimeError("底层接口失败")
+
+    def fake_record_command_memory(**kwargs: object) -> None:
+        recorded.update(kwargs)
+
+    monkeypatch.setattr(sys, "argv", ["beartools", "boom"])
+    monkeypatch.setattr(cli, "app", fake_app)
+    monkeypatch.setattr(cli, "_record_command_memory", fake_record_command_memory)
+    monkeypatch.setattr(cli, "_resolve_memory_now", lambda: cli.datetime(2026, 5, 20, 10, 30, 0))
+    monkeypatch.setattr(cli, "_log_cli_exception", lambda exc: logged.append(exc))
+    monkeypatch.chdir(tmp_path)
+
+    try:
+        cli._main_wrapper()
+    except SystemExit as exc:
+        assert exc.code == 1
+    else:
+        raise AssertionError("预期 _main_wrapper 退出")
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "错误: 底层接口失败\n"
+    assert "Traceback" not in captured.err
+    assert len(logged) == 1
+    assert isinstance(logged[0], RuntimeError)
+    assert recorded["exit_code"] == 1
+    assert recorded["stderr_text"] == "错误: 底层接口失败\n"
 
 
 def test_build_memory_now_from_environment(monkeypatch) -> None:

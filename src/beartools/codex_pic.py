@@ -276,6 +276,7 @@ def _build_refine_instructions(template_name: str) -> str:
 async def _refine_pic_prompt_async(prompt: str, config: CodexConfig, client: AsyncOpenAI) -> str:
     """先用文本模型把原始 Markdown 润色成更适合做图的提示词。"""
 
+    logger.info("调用做图提示词润色模型: model=%s original_prompt=%s", config.model, prompt)
     set_tracing_disabled(True)
     model = OpenAIResponsesModel(model=config.model, openai_client=client)
     agent = Agent(
@@ -291,7 +292,14 @@ async def _refine_pic_prompt_async(prompt: str, config: CodexConfig, client: Asy
     refined_prompt = str(final_output).strip()
     if not refined_prompt:
         raise RuntimeError("图片提示词润色失败：返回内容为空")
+    logger.info("做图提示词润色完成: model=%s refined_prompt=%s", config.model, refined_prompt)
     return refined_prompt
+
+
+async def refine_codex_pic_prompt_async(prompt: str, config: CodexConfig, client: AsyncOpenAI) -> str:
+    """共享做图提示词润色能力，供 pic 和 vplan 调用。"""
+
+    return await _refine_pic_prompt_async(prompt, config, client)
 
 
 async def _refine_picedit_prompt_async(prompt: str, config: CodexConfig, client: AsyncOpenAI) -> str:
@@ -427,7 +435,7 @@ async def run_codex_pic_async(
         "image_timeout_seconds": max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS),
     }
     _write_pic_trace(trace_output_file, trace_payload)
-    _log_pic_stage("pic_started", source=md_path, original_prompt=prompt)
+    logger.info("图片任务阶段=pic_started source=%s", md_path)
     refine_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_REFINE_TIMEOUT_SECONDS)
     image_timeout_seconds = max(config.timeout_seconds, DEFAULT_PIC_IMAGE_TIMEOUT_SECONDS)
 
@@ -443,7 +451,7 @@ async def run_codex_pic_async(
         refine_started_at = time.monotonic()
         try:
             refined_prompt = await asyncio.wait_for(
-                _refine_pic_prompt_async(prompt, config, client), timeout=refine_timeout_seconds
+                refine_codex_pic_prompt_async(prompt, config, client), timeout=refine_timeout_seconds
             )
         except Exception as exc:
             trace_payload["status"] = "refine_failed"
@@ -460,13 +468,11 @@ async def run_codex_pic_async(
             _TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)
         )
         _write_pic_trace(trace_output_file, trace_payload)
-        _log_pic_stage(
-            "pic_refined",
-            source=md_path,
-            original_prompt=prompt,
-            refined_prompt=refined_prompt,
-            elapsed_seconds=cast(float, trace_payload["refine_elapsed_seconds"]),
-            token_usage=_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None),
+        logger.info(
+            "图片任务阶段=pic_refined source=%s elapsed_seconds=%s token_usage=%s",
+            md_path,
+            trace_payload["refine_elapsed_seconds"],
+            _token_usage_to_payload(_TokenUsage(input_tokens=None, output_tokens=None, total_tokens=None)),
         )
         console.print(
             f"[pic] 提示词优化完成：{md_path.name}，开始生成图片（超时 {image_timeout_seconds}s）...", style="cyan"
@@ -523,14 +529,12 @@ async def run_codex_pic_async(
     trace_payload["image_response"] = _sanitize_trace_value(response)
     trace_payload["image_output_file"] = str(image_output_file)
     _write_pic_trace(trace_output_file, trace_payload)
-    _log_pic_stage(
-        "pic_completed",
-        source=md_path,
-        original_prompt=prompt,
-        refined_prompt=refined_prompt,
-        elapsed_seconds=cast(float, trace_payload["total_elapsed_seconds"]),
-        token_usage=image_token_usage,
-        output_file=image_output_file,
+    logger.info(
+        "图片任务阶段=pic_completed source=%s elapsed_seconds=%s token_usage=%s output_file=%s",
+        md_path,
+        trace_payload["total_elapsed_seconds"],
+        _token_usage_to_payload(image_token_usage),
+        image_output_file,
     )
     logger.info("图片生成完成: image_output=%s trace_output=%s", image_output_file, trace_output_file)
 

@@ -109,4 +109,6 @@ codex:
   pic_quality: "high"
   pic_output_format: "png"
   pic_response_format: "b64_json"
+  vplan:
+    key: "@get codex.vplan.key"
   # bin_path: "/usr/local/bin/codex"
