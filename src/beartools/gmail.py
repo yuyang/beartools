@@ -7,7 +7,7 @@ import base64
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from email.message import EmailMessage
+from email.mime.text import MIMEText
 from html import unescape
 from pathlib import Path
 import re
@@ -166,10 +166,10 @@ def validate_email_address(email_address: str) -> str:
 def create_plain_text_message(*, send_to: str, title: str, content: str) -> dict[str, object]:
     """构造 Gmail API 纯文本邮件 payload。"""
 
-    message = EmailMessage()
+    normalized_content = content if content.endswith("\n") else f"{content}\n"
+    message = MIMEText(normalized_content, _subtype="plain", _charset="utf-8")
     message["To"] = validate_email_address(send_to)
     message["Subject"] = title
-    message.set_content(content, subtype="plain", charset="utf-8")
     encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
     return {"raw": encoded_message}
 

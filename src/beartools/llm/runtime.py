@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeGuard
 
 from anthropic import Anthropic, AsyncAnthropic
 from anthropic.types import Message
@@ -121,22 +121,52 @@ async def _probe_async_anthropic_client(client: AsyncAnthropic, model: str) -> N
     _ensure_anthropic_message_has_text(message)
 
 
+def _is_sync_anthropic_client(client: object) -> TypeGuard[Anthropic]:
+    """在新 stubs 下避免直接使用 Anthropic class 的 Any 污染。"""
+
+    return hasattr(client, "messages") and not hasattr(client, "responses")
+
+
+def _is_async_anthropic_client(client: object) -> TypeGuard[AsyncAnthropic]:
+    """在新 stubs 下避免直接使用 AsyncAnthropic class 的 Any 污染。"""
+
+    return hasattr(client, "messages") and not hasattr(client, "responses")
+
+
+def _is_sync_openai_client(client: object) -> TypeGuard[OpenAI]:
+    """对称判定 OpenAI 同步 client，避免在调用点额外 cast。"""
+
+    return hasattr(client, "responses") and not hasattr(client, "messages")
+
+
+def _is_async_openai_client(client: object) -> TypeGuard[AsyncOpenAI]:
+    """对称判定 OpenAI 异步 client，避免在调用点额外 cast。"""
+
+    return hasattr(client, "responses") and not hasattr(client, "messages")
+
+
 def probe_runtime_node(client: SyncLLMClient, model: str) -> None:
     """探测同步 SDK client 当前是否可用。"""
 
-    if isinstance(client, Anthropic):
+    if _is_sync_anthropic_client(client):
         _probe_anthropic_client(client, model)
         return None
-    _probe_openai_client(client, model)
+    if _is_sync_openai_client(client):
+        _probe_openai_client(client, model)
+        return None
+    raise LLMRuntimeInitializationError("LLM 节点探测失败：不支持的同步 client 类型")
 
 
 async def probe_async_runtime_node(client: AsyncLLMClient, model: str) -> None:
     """探测异步 SDK client 当前是否可用。"""
 
-    if isinstance(client, AsyncAnthropic):
+    if _is_async_anthropic_client(client):
         await _probe_async_anthropic_client(client, model)
         return None
-    await _probe_async_openai_client(client, model)
+    if _is_async_openai_client(client):
+        await _probe_async_openai_client(client, model)
+        return None
+    raise LLMRuntimeInitializationError("LLM 节点探测失败：不支持的异步 client 类型")
 
 
 __all__ = [

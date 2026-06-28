@@ -421,7 +421,11 @@ def test_llm_command_summarizer_supports_anthropic(monkeypatch: pytest.MonkeyPat
     _FakeMemoryAgent.output = "命令总结"
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
-    monkeypatch.setattr(memory_service, "AsyncAnthropic", _FakeAsyncClient)
+    monkeypatch.setattr(
+        memory_service,
+        "_is_memory_async_anthropic_client",
+        lambda client: isinstance(client, _FakeAsyncClient),
+    )
     monkeypatch.setattr(memory_service, "AnthropicModel", _fake_anthropic_model)
     monkeypatch.setattr(memory_service, "AnthropicProvider", _FakeAnthropicProvider)
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)
@@ -482,7 +486,11 @@ def test_llm_daily_summarizer_supports_anthropic(monkeypatch: pytest.MonkeyPatch
     _FakeMemoryAgent.output = "日总结"
 
     monkeypatch.setattr(memory_service, "LLFactory", _FakeLLFactory)
-    monkeypatch.setattr(memory_service, "AsyncAnthropic", _FakeAsyncClient)
+    monkeypatch.setattr(
+        memory_service,
+        "_is_memory_async_anthropic_client",
+        lambda client: isinstance(client, _FakeAsyncClient),
+    )
     monkeypatch.setattr(memory_service, "AnthropicModel", _fake_anthropic_model)
     monkeypatch.setattr(memory_service, "AnthropicProvider", _FakeAnthropicProvider)
     monkeypatch.setattr(memory_service, "Agent", _FakeMemoryAgent)

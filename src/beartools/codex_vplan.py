@@ -201,7 +201,7 @@ async def run_codex_vplan_async(
     image_started_at = time.monotonic()
     try:
         ark_client = OpenAI(api_key=vplan_api_key, base_url=ARK_BASE_URL)
-        response: ImagesResponse = ark_client.images.generate(  # type: ignore[call-overload]
+        response: ImagesResponse = ark_client.images.generate(
             model=ARK_IMAGE_MODEL,
             prompt=refined_prompt,
             size=size,

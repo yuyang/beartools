@@ -11,7 +11,7 @@ from io import StringIO
 import shlex
 import sys
 import time
-from typing import Protocol, TextIO, cast
+from typing import Protocol, TextIO, TypeGuard, cast, runtime_checkable
 
 import click
 import typer
@@ -38,6 +38,19 @@ from beartools.memory.service import append_command_memory, create_command_summa
 class _ClickGroupProtocol(Protocol):
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         """获取子命令。"""
+
+
+class _CommandWithHelpProtocol(Protocol):
+    help: str | None
+    short_help: str | None
+
+
+@runtime_checkable
+class _ClickExceptionLikeProtocol(Protocol):
+    exit_code: int
+
+    def show(self, file: TextIO | None = None) -> None:
+        """按 click 风格输出异常。"""
 
 
 class _TeeTextCapture:
@@ -207,6 +220,9 @@ def _run_app_with_friendly_exceptions(
     except SystemExit as exc:
         return _coerce_exit_code(exc.code)
     except Exception as exc:
+        if _is_click_exception_like(exc):
+            exc.show(file=cast(TextIO, stderr_capture))
+            return int(exc.exit_code)
         _log_cli_exception(exc)
         stderr_capture.write(f"{_format_cli_exception(exc)}\n")
         return 1
@@ -292,19 +308,25 @@ def _resolve_help_text(args: list[str]) -> str:
     """解析当前命令 help 文本。"""
 
     click_command = get_command(app)
-    current_command: click.Command = click_command
+    current_command: _CommandWithHelpProtocol = cast(_CommandWithHelpProtocol, click_command)
     remaining = list(args)
     while remaining and hasattr(current_command, "get_command"):
         next_arg = remaining[0]
         if next_arg.startswith("-"):
             break
         command_group = cast(_ClickGroupProtocol, current_command)
-        next_command = command_group.get_command(click.Context(current_command), next_arg)
+        next_command = command_group.get_command(click.Context(cast(click.Command, current_command)), next_arg)
         if next_command is None:
             break
-        current_command = next_command
+        current_command = cast(_CommandWithHelpProtocol, next_command)
         remaining.pop(0)
     return current_command.help or current_command.short_help or "无"
+
+
+def _is_click_exception_like(exc: BaseException) -> TypeGuard[_ClickExceptionLikeProtocol]:
+    """兼容 typer 内置 vendored click 异常。"""
+
+    return isinstance(exc, _ClickExceptionLikeProtocol)
 
 
 if __name__ == "__main__":

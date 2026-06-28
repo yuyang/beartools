@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import shlex
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -20,6 +20,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from beartools.llm.factory import LLFactory
 from beartools.llm.pydantic_openai import create_openai_responses_model
+from beartools.llm.runtime import _is_async_anthropic_client
 from beartools.logger import get_logger
 from beartools.memory.models import CommandMemoryInput, CommandSummarizer, DailySummarizer
 from beartools.memory.prompts import build_command_memory_prompt, build_daily_summary_prompt
@@ -334,12 +335,18 @@ def _build_pydantic_model(
             model_name=model_name,
             timeout_seconds=timeout_seconds,
         )
-    if isinstance(client, AsyncAnthropic):
+    if _is_memory_async_anthropic_client(client):
         return AnthropicModel(
             model_name,
-            provider=AnthropicProvider(anthropic_client=client),
+            provider=AnthropicProvider(anthropic_client=cast(AsyncAnthropic, client)),
         )
     raise RuntimeError("命令记忆摘要只支持 OpenAI 或 Anthropic async client")
+
+
+def _is_memory_async_anthropic_client(client: object) -> bool:
+    """兼容真实 Anthropic client 与测试中的 monkeypatch fake class。"""
+
+    return _is_async_anthropic_client(client)
 
 
 def _extract_memory_model_info(summarizer: object, *, fallback: _MemoryModelInfo) -> _MemoryModelInfo:

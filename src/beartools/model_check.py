@@ -26,7 +26,7 @@ from anthropic.types import Message
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 from beartools.llm.factory import LLFactory, LLMCandidate
-from beartools.llm.runtime import AgentTier, SyncLLMClient
+from beartools.llm.runtime import AgentTier, SyncLLMClient, _is_sync_anthropic_client, _is_sync_openai_client
 
 DEFAULT_MODEL_CHECK_QUESTIONS_PATH = Path("check/questions.yaml")
 DEFAULT_MODEL_CHECK_OUTPUT_DIR = Path("output")
@@ -408,9 +408,11 @@ def _ask_anthropic_question(client: Anthropic, node: LLMCandidate, question: Mod
 
 
 def _ask_question(client: SyncLLMClient, node: LLMCandidate, question: ModelCheckQuestion) -> ModelCheckAnswer:
-    if isinstance(client, Anthropic):
+    if _is_sync_anthropic_client(client):
         return _ask_anthropic_question(client, node, question)
-    return _ask_openai_question(client, node, question)
+    if _is_sync_openai_client(client):
+        return _ask_openai_question(client, node, question)
+    raise RuntimeError("model check 当前只支持 OpenAI 或 Anthropic client")
 
 
 def _format_error(error: BaseException) -> str:
